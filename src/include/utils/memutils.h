@@ -18,6 +18,8 @@
 #define MEMUTILS_H
 
 #include "nodes/memnodes.h"
+#include "storage/condition_variable.h"
+#include "storage/lmgr.h"
 
 
 /*
@@ -47,6 +49,8 @@
 #define InvalidAllocSize	SIZE_MAX
 
 #define AllocHugeSizeIsValid(size)	((Size) (size) <= MaxAllocHugeSize)
+
+#define MEMORY_CONTEXT_IDENT_DISPLAY_SIZE	1024
 
 
 /*
@@ -114,6 +118,62 @@ extern MemoryContext AllocSetContextCreateInternal(MemoryContext parent,
 												   Size minContextSize,
 												   Size initBlockSize,
 												   Size maxBlockSize);
+
+/* Shared memory state for Memory Context Statistics reporting */
+typedef struct MemoryContextInfo
+{
+	char		name[MEMORY_CONTEXT_IDENT_DISPLAY_SIZE];
+	char		ident[MEMORY_CONTEXT_IDENT_DISPLAY_SIZE];
+	Datum		path[128];
+	char		type[128];
+	int			path_length;
+	int64		totalspace;
+	int64		nblocks;
+	int64		freespace;
+	int64		freechunks;
+}			MemoryContextInfo;
+
+typedef struct MemoryContextState
+{
+	ConditionVariable memctx_cv;
+	LWLock		lw_lock;
+	bool		in_use;
+	int			proc_id;
+	int			in_memory_stats;
+	int			total_stats;
+	bool		get_summary;
+	MemoryContextInfo memctx_infos[30];
+}			MemoryContextState;
+
+/* Backend local struct used to write statistics to a file */
+typedef struct MemoryContextParams
+{
+	char		name[1024];
+	char		ident[1024];
+	char		type[128];
+	Datum		path[128];
+	int			path_length;
+	int64		totalspace;
+	int64		nblocks;
+	int64		freespace;
+	int64		freechunks;
+}			MemoryContextParams;
+
+/*
+ * MemoryContextId
+ *		Used for storage of transient identifiers for
+ *		pg_get_backend_memory_contexts.
+ */
+typedef struct MemoryContextId
+{
+	MemoryContext context;
+	int			context_id;
+}			MemoryContextId;
+
+extern PGDLLIMPORT MemoryContextState * memCtxState;
+extern void ProcessGetMemoryContextInterrupt(void);
+extern void HandleGetMemoryContextInterrupt(void);
+extern void MemCtxShmemInit(void);
 
 /*
  * This wrapper macro exists to check for non-constant strings used as context
