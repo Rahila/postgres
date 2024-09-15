@@ -21,18 +21,22 @@
 
 #include "postgres.h"
 
+#include "common/file_utils.h"
 #include "mb/pg_wchar.h"
 #include "miscadmin.h"
+#include "nodes/pg_list.h"
+#include "storage/fd.h"
+#include "utils/hsearch.h"
 #include "utils/memdebug.h"
 #include "utils/memutils.h"
 #include "utils/memutils_internal.h"
 #include "utils/memutils_memorychunk.h"
 
-
 static void BogusFree(void *pointer);
 static void *BogusRealloc(void *pointer, Size size, int flags);
 static MemoryContext BogusGetChunkContext(void *pointer);
 static Size BogusGetChunkSpace(void *pointer);
+static int	PublishMemoryContextToFile(MemoryContext context, FILE *fp, List *path, char *clipped_ident);
 
 /*****************************************************************************
  *	  GLOBAL MEMORY															 *
@@ -166,6 +170,7 @@ static void MemoryContextStatsInternal(MemoryContext context, int level,
 static void MemoryContextStatsPrint(MemoryContext context, void *passthru,
 									const char *stats_string,
 									bool print_to_stderr);
+static void PublishMemoryContext(MemoryContext context, int64 counter, List *path, char *clipped_ident);
 
 /*
  * You should not do memory allocations within a critical section, because
@@ -1277,6 +1282,21 @@ HandleLogMemoryContextInterrupt(void)
 }
 
 /*
+ * HandleGetMemoryContextInterrupt
+ *		Handle receipt of an interrupt indicating publishing of memory
+ *		contexts.
+ *
+ * All the actual work is deferred to ProcessLogMemoryContextInterrupt()
+ */
+void
+HandleGetMemoryContextInterrupt(void)
+{
+	InterruptPending = true;
+	PublishMemoryContextPending = true;
+	/* latch will be set by procsignal_sigusr1_handler */
+}
+
+/*
  * ProcessLogMemoryContextInterrupt
  * 		Perform logging of memory contexts of this backend process.
  *
@@ -1311,6 +1331,296 @@ ProcessLogMemoryContextInterrupt(void)
 	 * details about individual siblings beyond 100 will not be large.
 	 */
 	MemoryContextStatsDetail(TopMemoryContext, 100, 100, false);
+}
+
+/*
+ * Run by each backend to publish their memory context
+ * statistics. It performs a breadth first search
+ * on the memory context tree, so that the parents
+ * get a chance to report stats before their children.
+ *
+ * Statistics are shared via fixed shared memory which
+ * can hold statistics for 29 contexts. The rest of the
+ * statistics are stored in a file. This file is created
+ * in PG_TEMP_FILES_DIR and deleted by the client after
+ * reading the stats.
+ */
+void
+ProcessGetMemoryContextInterrupt(void)
+{
+	/* Store the memory context details in shared memory */
+
+	List	   *contexts;
+	int64		counter = 0;
+	FILE	   *fp;
+	char		tmpfilename[MAXPGPATH];
+
+	HASHCTL		ctl;
+	HTAB	   *context_id_lookup;
+	int			context_id = 0;
+	bool		found;
+
+	/*
+	 * Shared memory is not available to be written Hence return without
+	 * clearing the PublishMemoryContextPending flag, so that this gets called
+	 * during the next ProcessInterrupts()
+	 */
+	SpinLockAcquire(&memCtxState->mutex);
+	if (memCtxState->in_use)
+	{
+		SpinLockRelease(&memCtxState->mutex);
+		return;
+	}
+	SpinLockRelease(&memCtxState->mutex);
+
+	/*
+	 * The hash table is used for constructing "path" column of
+	 * pg_get_backends_memory_contextis view, similar to its local backend
+	 * couterpart.
+	 */
+	ctl.keysize = sizeof(MemoryContext);
+	ctl.entrysize = sizeof(MemoryContextId);
+	ctl.hcxt = CurrentMemoryContext;
+
+	context_id_lookup = hash_create("pg_get_backend_memory_contexts",
+									256,
+									&ctl,
+									HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
+
+	contexts = list_make1(TopMemoryContext);
+
+	/* Construct name for temp file */
+	snprintf(tmpfilename, MAXPGPATH, "%s/%s.memstats.%d",
+			 PG_TEMP_FILES_DIR, PG_TEMP_FILE_PREFIX,
+			 MyProcPid);
+
+	/*
+	 * As in OpenTemporaryFileInTablespace, try to make the temp-file
+	 * directory, ignoring errors.
+	 */
+	(void) MakePGDirectory(PG_TEMP_FILES_DIR);
+	/* Open file */
+	fp = AllocateFile(tmpfilename, PG_BINARY_A);
+
+	SpinLockAcquire(&memCtxState->mutex);
+	memCtxState->proc_id = MyProcPid;
+
+	foreach_ptr(MemoryContextData, cur, contexts)
+	{
+		MemoryContextId *entry;
+		List	   *path = NIL;
+		char		clipped_ident[MEMORY_CONTEXT_IDENT_DISPLAY_SIZE];
+
+		entry = (MemoryContextId *) hash_search(context_id_lookup, &cur,
+												HASH_ENTER, &found);
+		entry->context_id = context_id++;
+
+		/*
+		 * Figure out the transient context_id of this context and each of its
+		 * ancestors.
+		 */
+		for (MemoryContext cur_context = cur; cur_context != NULL; cur_context = cur_context->parent)
+		{
+			MemoryContextId *cur_entry;
+
+			cur_entry = hash_search(context_id_lookup, &cur_context, HASH_FIND, &found);
+
+			if (!found)
+			{
+				elog(LOG, "hash table corrupted, can't construct path value");
+				break;
+			}
+			path = lcons_int(cur_entry->context_id, path);
+		}
+		/* Trim and copy the identifier if it is not set to NULL */
+		if (cur->ident != NULL)
+		{
+			int			idlen = strlen(cur->ident);
+
+			/*
+			 * Some identifiers such as SQL query string can be very long,
+			 * truncate oversize identifiers.
+			 */
+			if (idlen >= MEMORY_CONTEXT_IDENT_DISPLAY_SIZE)
+				idlen = pg_mbcliplen(cur->ident, idlen, MEMORY_CONTEXT_IDENT_DISPLAY_SIZE - 1);
+
+			memcpy(clipped_ident, cur->ident, idlen);
+			clipped_ident[idlen] = '\0';
+		}
+		if (counter <= 28)
+		{
+			/* Copy statistics to shared memory */
+			PublishMemoryContext(cur, counter, path, (cur->ident ? clipped_ident : NULL));
+		}
+		else
+		{
+			if (PublishMemoryContextToFile(cur, fp, path, (cur->ident ? clipped_ident : NULL)) == -1)
+				break;
+		}
+		/* Append the children of the current context to the main list */
+		for (MemoryContext c = cur->firstchild; c != NULL; c = c->nextchild)
+			contexts = lappend(contexts, c);
+
+		counter = counter + 1;
+
+		/*
+		 * Shared memory is full, release lock and write to file from next
+		 * iteration
+		 */
+		if (counter == 29)
+		{
+			memCtxState->in_use = true;
+			SpinLockRelease(&memCtxState->mutex);
+			if (fp == NULL)
+				break;
+		}
+	}
+	ConditionVariableBroadcast(&memCtxState->memctx_cv);
+	/* Release file */
+	if (fp && FreeFile(fp))
+	{
+		ereport(LOG,
+				(errcode_for_file_access(),
+				 errmsg("could not free file \"%s\": %m", tmpfilename)));
+	}
+
+	/*
+	 * Clear the flag at the end to avoid it from being falsely cleared, in
+	 * case the shared memory was not available to be written
+	 */
+
+	PublishMemoryContextPending = false;
+}
+
+static void
+PublishMemoryContext(MemoryContext context, int64 counter, List *path, char *clipped_ident)
+{
+	MemoryContextCounters stat;
+	char	   *type;
+
+	Assert(strlen(context->name) < MEMORY_CONTEXT_IDENT_DISPLAY_SIZE);
+	strncpy(memCtxState->memctx_infos[counter].name, context->name, strlen(context->name));
+
+	if (clipped_ident != NULL)
+	{
+		strncpy(memCtxState->memctx_infos[counter].ident, clipped_ident, strlen(clipped_ident));
+		if (strcmp(context->name, "dynahash") == 0)
+		{
+			strncpy(memCtxState->memctx_infos[counter].name, clipped_ident, strlen(clipped_ident));
+		}
+	}
+	memCtxState->memctx_infos[counter].path_length = list_length(path);
+	foreach_int(i, path)
+		memCtxState->memctx_infos[counter].path[foreach_current_index(i)] = Int32GetDatum(i);
+
+	/* Examine the context stats */
+	memset(&stat, 0, sizeof(stat));
+	(*context->methods->stats) (context, NULL, NULL, &stat, true);
+
+	switch (context->type)
+	{
+		case T_AllocSetContext:
+			type = "AllocSet";
+			strncpy(memCtxState->memctx_infos[counter].type, type, strlen(type));
+			break;
+		case T_GenerationContext:
+			type = "Generation";
+			strncpy(memCtxState->memctx_infos[counter].type, type, strlen(type));
+			break;
+		case T_SlabContext:
+			type = "Slab";
+			strncpy(memCtxState->memctx_infos[counter].type, type, strlen(type));
+			break;
+		case T_BumpContext:
+			type = "Bump";
+			strncpy(memCtxState->memctx_infos[counter].type, type, strlen(type));
+			break;
+		default:
+			type = "???";
+			strncpy(memCtxState->memctx_infos[counter].type, type, strlen(type));
+			break;
+	}
+	memCtxState->memctx_infos[counter].totalspace = stat.totalspace;
+	memCtxState->memctx_infos[counter].nblocks = stat.nblocks;
+	memCtxState->memctx_infos[counter].freespace = stat.freespace;
+	memCtxState->memctx_infos[counter].freechunks = stat.freechunks;
+}
+
+static int
+PublishMemoryContextToFile(MemoryContext context, FILE *fp, List *path, char *clipped_ident)
+{
+	MemoryContextCounters stat;
+	MemoryContextParams *mem_stat;
+	char	   *type;
+
+	mem_stat = palloc0(sizeof(MemoryContextParams));
+
+	Assert(strlen(context->name) < MEMORY_CONTEXT_IDENT_DISPLAY_SIZE);
+	strncpy(mem_stat->name, context->name, strlen(context->name));
+
+	if (clipped_ident != NULL)
+	{
+		strncpy(mem_stat->ident, clipped_ident, strlen(clipped_ident));
+		if (strcmp(context->name, "dynahash") == 0)
+		{
+			strncpy(mem_stat->name, clipped_ident, strlen(clipped_ident));
+		}
+	}
+	mem_stat->path_length = list_length(path);
+	foreach_int(i, path)
+		mem_stat->path[foreach_current_index(i)] = Int32GetDatum(i);
+
+	/* Examine the context itself */
+	memset(&stat, 0, sizeof(stat));
+	(*context->methods->stats) (context, NULL, NULL, &stat, true);
+
+	switch (context->type)
+	{
+		case T_AllocSetContext:
+			type = "AllocSet";
+			strncpy(mem_stat->type, type, strlen(type));
+			break;
+		case T_GenerationContext:
+			type = "Generation";
+			strncpy(mem_stat->type, type, strlen(type));
+			break;
+		case T_SlabContext:
+			type = "Slab";
+			strncpy(mem_stat->type, type, strlen(type));
+			break;
+		case T_BumpContext:
+			type = "Bump";
+			strncpy(mem_stat->type, type, strlen(type));
+			break;
+		default:
+			type = "???";
+			strncpy(mem_stat->type, type, strlen(type));
+			break;
+	}
+	mem_stat->totalspace = stat.totalspace;
+	mem_stat->nblocks = stat.nblocks;
+	mem_stat->freespace = stat.freespace;
+	mem_stat->freechunks = stat.freechunks;
+
+	if (!fp)
+	{
+		ereport(LOG,
+				(errcode_for_file_access(),
+				 errmsg("could not create file")));
+		pfree(mem_stat);
+		return -1;
+	}
+	if (fwrite(mem_stat, sizeof(MemoryContextParams), 1, fp) != 1)
+	{
+		ereport(LOG,
+				(errcode_for_file_access(),
+				 errmsg("could not write to file")));
+		pfree(mem_stat);
+		return -1;
+	}
+	pfree(mem_stat);
+
+	return 0;
 }
 
 void *

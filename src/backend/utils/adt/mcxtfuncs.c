@@ -17,28 +17,23 @@
 
 #include "funcapi.h"
 #include "mb/pg_wchar.h"
+#include "miscadmin.h"
+#include "nodes/pg_list.h"
 #include "storage/proc.h"
 #include "storage/procarray.h"
 #include "utils/array.h"
 #include "utils/builtins.h"
 #include "utils/hsearch.h"
+#include "utils/memutils.h"
+#include "utils/wait_event_types.h"
+#include "common/file_utils.h"
 
 /* ----------
  * The max bytes for showing identifiers of MemoryContext.
  * ----------
  */
-#define MEMORY_CONTEXT_IDENT_DISPLAY_SIZE	1024
 
-/*
- * MemoryContextId
- *		Used for storage of transient identifiers for
- *		pg_get_backend_memory_contexts.
- */
-typedef struct MemoryContextId
-{
-	MemoryContext context;
-	int			context_id;
-}			MemoryContextId;
+struct MemoryContextState *memCtxState = NULL;
 
 /*
  * int_list_to_array
@@ -304,4 +299,213 @@ pg_log_backend_memory_contexts(PG_FUNCTION_ARGS)
 	}
 
 	PG_RETURN_BOOL(true);
+}
+
+Datum
+pg_get_backends_memory_contexts(PG_FUNCTION_ARGS)
+{
+	int			pid = PG_GETARG_INT32(0);
+	PGPROC	   *proc;
+	ProcNumber	procNumber = INVALID_PROC_NUMBER;
+	int			i;
+	ReturnSetInfo *rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
+	MemoryContextParams *mem_stat = NULL;
+	char		tmpfilename[MAXPGPATH];
+	FILE	   *fp = NULL;
+
+	InitMaterializedSRF(fcinfo, 0);
+
+	/*
+	 * See if the process with given pid is a backend or an auxiliary process.
+	 */
+	proc = BackendPidGetProc(pid);
+	if (proc == NULL)
+		proc = AuxiliaryPidGetProc(pid);
+
+	/*
+	 * BackendPidGetProc() and AuxiliaryPidGetProc() return NULL if the pid
+	 * isn't valid; but by the time we reach kill(), a process for which we
+	 * get a valid proc here might have terminated on its own.  There's no way
+	 * to acquire a lock on an arbitrary process to prevent that. But since
+	 * this mechanism is usually used to debug a backend or an auxiliary
+	 * process running and consuming lots of memory, that it might end on its
+	 * own first and its memory contexts are not logged is not a problem.
+	 */
+	if (proc == NULL)
+	{
+		/*
+		 * This is just a warning so a loop-through-resultset will not abort
+		 * if one backend terminated on its own during the run.
+		 */
+		ereport(WARNING,
+				(errmsg("PID %d is not a PostgreSQL server process", pid)));
+		PG_RETURN_BOOL(false);
+	}
+
+	procNumber = GetNumberFromPGProc(proc);
+	if (SendProcSignal(pid, PROCSIG_GET_MEMORY_CONTEXT, procNumber) < 0)
+	{
+		/* Again, just a warning to allow loops */
+		ereport(WARNING,
+				(errmsg("could not send signal to process %d: %m", pid)));
+		PG_RETURN_BOOL(false);
+	}
+
+	/*
+	 * Wait for a backend to publish stats, indicated when in_use is set true
+	 * by the backend
+	 */
+	while (1)
+	{
+		/* Wait and see. */
+		ConditionVariablePrepareToSleep(&memCtxState->memctx_cv);
+		ConditionVariableSleep(&memCtxState->memctx_cv,
+							   WAIT_EVENT_MEM_CTX_PUBLISH);
+
+		/*
+		 * We expect to come out of sleep only when atleast one backend has
+		 * published some memcontext information
+		 */
+		SpinLockAcquire(&memCtxState->mutex);
+
+		/*
+		 * Make sure the information belongs to pid we requested information
+		 * for, Otherwise loop back and wait for the correct backend to
+		 * publish the information
+		 */
+		if (memCtxState->proc_id == pid)
+			break;
+		else
+			SpinLockRelease(&memCtxState->mutex);
+
+	}
+	/* Backend has finished publishing the stats, read them */
+	for (i = 0; i < 29; i++)
+	{
+		ArrayType  *path_array;
+		int			path_length;
+		Datum		values[8];
+		bool		nulls[8];
+
+		memset(values, 0, sizeof(values));
+		memset(nulls, 0, sizeof(nulls));
+
+		if (memCtxState->memctx_infos[i].name)
+			values[0] = CStringGetTextDatum(memCtxState->memctx_infos[i].name);
+		else
+			nulls[0] = true;
+		if (memCtxState->memctx_infos[i].ident)
+			values[1] = CStringGetTextDatum(memCtxState->memctx_infos[i].ident);
+		else
+			nulls[1] = true;
+
+		values[2] = CStringGetTextDatum(memCtxState->memctx_infos[i].type);
+		path_length = memCtxState->memctx_infos[i].path_length;
+		path_array = construct_array_builtin(memCtxState->memctx_infos[i].path, path_length, INT4OID);
+		values[3] = PointerGetDatum(path_array);
+		values[4] = Int64GetDatum(memCtxState->memctx_infos[i].totalspace);
+		values[5] = Int64GetDatum(memCtxState->memctx_infos[i].nblocks);
+		values[6] = Int64GetDatum(memCtxState->memctx_infos[i].freespace);
+		values[7] = Int64GetDatum(memCtxState->memctx_infos[i].freechunks);
+
+		tuplestore_putvalues(rsinfo->setResult, rsinfo->setDesc, values, nulls);
+
+		fprintf(stderr,
+				"Grand total: %zu bytes in %zu blocks; %zu free (%zu chunks);",
+				memCtxState->memctx_infos[i].totalspace, memCtxState->memctx_infos[i].nblocks,
+				memCtxState->memctx_infos[i].freespace, memCtxState->memctx_infos[i].freechunks);
+	}
+	memCtxState->in_use = false;
+	/* Compute name for temp mem stat file */
+	snprintf(tmpfilename, MAXPGPATH, "%s/%s.memstats.%d",
+			 PG_TEMP_FILES_DIR, PG_TEMP_FILE_PREFIX,
+			 memCtxState->proc_id);
+	SpinLockRelease(&memCtxState->mutex);
+
+	ConditionVariableCancelSleep();
+
+	/* Open file */
+	fp = AllocateFile(tmpfilename, PG_BINARY_R);
+	if (!fp)
+	{
+		ereport(WARNING,
+				(errcode_for_file_access(),
+				 errmsg("could not read from the file")));
+		PG_RETURN_BOOL(false);
+	}
+	mem_stat = palloc0(sizeof(MemoryContextParams));
+	while (!feof(fp))
+	{
+		int			path_length;
+		ArrayType  *path_array;
+		Datum		values[8];
+		bool		nulls[8];
+
+		memset(values, 0, sizeof(values));
+		memset(nulls, 0, sizeof(nulls));
+
+		/* Read stats from file */
+		fread(mem_stat, sizeof(MemoryContextParams), 1, fp);
+		if (ferror(fp))
+		{
+			elog(WARNING, "File read error");
+			break;
+		}
+
+		path_length = mem_stat->path_length;
+		if (mem_stat->name)
+			values[0] = CStringGetTextDatum(mem_stat->name);
+		else
+			nulls[0] = true;
+
+		if (mem_stat->ident)
+			values[1] = CStringGetTextDatum(mem_stat->ident);
+		else
+			nulls[1] = true;
+
+		values[2] = CStringGetTextDatum(mem_stat->type);
+
+		path_array = construct_array_builtin(mem_stat->path, path_length, INT4OID);
+		values[3] = PointerGetDatum(path_array);
+		values[4] = Int64GetDatum(mem_stat->totalspace);
+		values[5] = Int64GetDatum(mem_stat->nblocks);
+		values[6] = Int64GetDatum(mem_stat->freespace);
+		values[7] = Int64GetDatum(mem_stat->freechunks);
+
+		tuplestore_putvalues(rsinfo->setResult, rsinfo->setDesc, values, nulls);
+
+	}
+	pfree(mem_stat);
+	FreeFile(fp);
+	/* Delete the temp file that stores memory stats */
+	unlink(tmpfilename);
+
+	return (Datum) 0;
+}
+
+static Size
+MemCtxShmemSize(void)
+{
+	Size		size;
+
+	size = offsetof(MemoryContextState, memctx_infos);
+	size = add_size(size, mul_size(30, sizeof(MemoryContextInfo)));
+	return size;
+}
+
+void
+MemCtxShmemInit(void)
+{
+	bool		found;
+
+	memCtxState = (MemoryContextState *) ShmemInitStruct("MemoryContextState",
+														 MemCtxShmemSize(),
+														 &found);
+	if (!found)
+	{
+		ConditionVariableInit(&memCtxState->memctx_cv);
+		SpinLockInit(&memCtxState->mutex);
+		memCtxState->in_use = false;
+		memset(&memCtxState->memctx_infos, 0, 30 * sizeof(MemoryContextInfo));
+	}
 }
