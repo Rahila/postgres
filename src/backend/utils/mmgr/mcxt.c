@@ -1359,6 +1359,7 @@ ProcessGetMemoryContextInterrupt(void)
 	HTAB	   *context_id_lookup;
 	int			context_id = 0;
 	bool		found;
+	MemoryContext	stat_cxt;
 
 	/*
 	 * Shared memory is not available to be written Hence return without
@@ -1378,9 +1379,15 @@ ProcessGetMemoryContextInterrupt(void)
 	 * pg_get_backends_memory_contextis view, similar to its local backend
 	 * couterpart.
 	 */
+	/* Make a new context that will contain the hash table, to ease the cleanup */
+	
+	stat_cxt = AllocSetContextCreate(CurrentMemoryContext,
+                                                                   "Memory context statistics",
+                                                                   ALLOCSET_DEFAULT_SIZES);
+	
 	ctl.keysize = sizeof(MemoryContext);
 	ctl.entrysize = sizeof(MemoryContextId);
-	ctl.hcxt = CurrentMemoryContext;
+	ctl.hcxt = stat_cxt;
 
 	context_id_lookup = hash_create("pg_get_backend_memory_contexts",
 									256,
@@ -1490,6 +1497,8 @@ ProcessGetMemoryContextInterrupt(void)
 	 */
 
 	PublishMemoryContextPending = false;
+	/* Delete the hash table memory context */
+	MemoryContextDelete(stat_cxt);
 }
 
 static void

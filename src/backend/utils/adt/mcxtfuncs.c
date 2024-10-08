@@ -357,11 +357,6 @@ pg_get_backends_memory_contexts(PG_FUNCTION_ARGS)
 	 */
 	while (1)
 	{
-		/* Wait and see. */
-		ConditionVariablePrepareToSleep(&memCtxState->memctx_cv);
-		ConditionVariableSleep(&memCtxState->memctx_cv,
-							   WAIT_EVENT_MEM_CTX_PUBLISH);
-
 		/*
 		 * We expect to come out of sleep only when atleast one backend has
 		 * published some memcontext information
@@ -377,6 +372,9 @@ pg_get_backends_memory_contexts(PG_FUNCTION_ARGS)
 			break;
 		else
 			SpinLockRelease(&memCtxState->mutex);
+
+		ConditionVariableSleep(&memCtxState->memctx_cv,
+							   WAIT_EVENT_MEM_CTX_PUBLISH);
 
 	}
 	/* Backend has finished publishing the stats, read them */
