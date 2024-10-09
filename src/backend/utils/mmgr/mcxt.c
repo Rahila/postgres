@@ -1361,6 +1361,7 @@ ProcessGetMemoryContextInterrupt(void)
 	bool		found;
 	MemoryContext	stat_cxt;
 
+	PublishMemoryContextPending = false;
 	/*
 	 * Shared memory is not available to be written Hence return without
 	 * clearing the PublishMemoryContextPending flag, so that this gets called
@@ -1476,13 +1477,11 @@ ProcessGetMemoryContextInterrupt(void)
 		 */
 		if (counter == 29)
 		{
-			memCtxState->in_use = true;
 			SpinLockRelease(&memCtxState->mutex);
 			if (fp == NULL)
 				break;
 		}
 	}
-	ConditionVariableBroadcast(&memCtxState->memctx_cv);
 	/* Release file */
 	if (fp && FreeFile(fp))
 	{
@@ -1491,14 +1490,16 @@ ProcessGetMemoryContextInterrupt(void)
 				 errmsg("could not free file \"%s\": %m", tmpfilename)));
 	}
 
-	/*
-	 * Clear the flag at the end to avoid it from being falsely cleared, in
-	 * case the shared memory was not available to be written
-	 */
-
-	PublishMemoryContextPending = false;
 	/* Delete the hash table memory context */
 	MemoryContextDelete(stat_cxt);
+	/*
+	 * Signal the waiting client backend after setting the 
+	 * exit condition flag 
+	 */
+	SpinLockAcquire(&memCtxState->mutex);
+	memCtxState->in_use = true;
+	SpinLockRelease(&memCtxState->mutex);
+	ConditionVariableBroadcast(&memCtxState->memctx_cv);
 }
 
 static void

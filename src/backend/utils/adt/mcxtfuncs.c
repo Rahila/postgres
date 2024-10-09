@@ -350,7 +350,6 @@ pg_get_backends_memory_contexts(PG_FUNCTION_ARGS)
 				(errmsg("could not send signal to process %d: %m", pid)));
 		PG_RETURN_BOOL(false);
 	}
-
 	/*
 	 * Wait for a backend to publish stats, indicated when in_use is set true
 	 * by the backend
@@ -363,27 +362,31 @@ pg_get_backends_memory_contexts(PG_FUNCTION_ARGS)
 		 */
 		SpinLockAcquire(&memCtxState->mutex);
 
-		/*
-		 * Make sure the information belongs to pid we requested information
+		/* Make sure that all the stats has been published
+		 * and the information belongs to pid we requested information
 		 * for, Otherwise loop back and wait for the correct backend to
 		 * publish the information
 		 */
-		if (memCtxState->proc_id == pid)
+		if (memCtxState->in_use == true && memCtxState->proc_id == pid)
 			break;
 		else
 			SpinLockRelease(&memCtxState->mutex);
 
-		ConditionVariableSleep(&memCtxState->memctx_cv,
-							   WAIT_EVENT_MEM_CTX_PUBLISH);
-
+		if (ConditionVariableTimedSleep(&memCtxState->memctx_cv, 120000,
+							   WAIT_EVENT_MEM_CTX_PUBLISH))
+		{
+			ereport(WARNING,
+					(errmsg("Wait for %d process to publish stats timed out, try again", pid)));
+			PG_RETURN_BOOL(false);
+		}
 	}
 	/* Backend has finished publishing the stats, read them */
 	for (i = 0; i < 29; i++)
 	{
 		ArrayType  *path_array;
 		int			path_length;
-		Datum		values[8];
-		bool		nulls[8];
+		Datum		values[10];
+		bool		nulls[10];
 
 		memset(values, 0, sizeof(values));
 		memset(nulls, 0, sizeof(nulls));
@@ -405,15 +408,11 @@ pg_get_backends_memory_contexts(PG_FUNCTION_ARGS)
 		values[5] = Int64GetDatum(memCtxState->memctx_infos[i].nblocks);
 		values[6] = Int64GetDatum(memCtxState->memctx_infos[i].freespace);
 		values[7] = Int64GetDatum(memCtxState->memctx_infos[i].freechunks);
+		values[8] = Int64GetDatum(memCtxState->memctx_infos[i].totalspace - memCtxState->memctx_infos[i].freespace);
+		values[9] = Int32GetDatum(memCtxState->proc_id);
 
 		tuplestore_putvalues(rsinfo->setResult, rsinfo->setDesc, values, nulls);
-
-		fprintf(stderr,
-				"Grand total: %zu bytes in %zu blocks; %zu free (%zu chunks);",
-				memCtxState->memctx_infos[i].totalspace, memCtxState->memctx_infos[i].nblocks,
-				memCtxState->memctx_infos[i].freespace, memCtxState->memctx_infos[i].freechunks);
 	}
-	memCtxState->in_use = false;
 	/* Compute name for temp mem stat file */
 	snprintf(tmpfilename, MAXPGPATH, "%s/%s.memstats.%d",
 			 PG_TEMP_FILES_DIR, PG_TEMP_FILE_PREFIX,
@@ -429,6 +428,9 @@ pg_get_backends_memory_contexts(PG_FUNCTION_ARGS)
 		ereport(WARNING,
 				(errcode_for_file_access(),
 				 errmsg("could not read from the file")));
+		SpinLockAcquire(&memCtxState->mutex);
+		memCtxState->in_use = false;
+		SpinLockRelease(&memCtxState->mutex);
 		PG_RETURN_BOOL(false);
 	}
 	mem_stat = palloc0(sizeof(MemoryContextParams));
@@ -436,8 +438,8 @@ pg_get_backends_memory_contexts(PG_FUNCTION_ARGS)
 	{
 		int			path_length;
 		ArrayType  *path_array;
-		Datum		values[8];
-		bool		nulls[8];
+		Datum		values[10];
+		bool		nulls[10];
 
 		memset(values, 0, sizeof(values));
 		memset(nulls, 0, sizeof(nulls));
@@ -469,14 +471,20 @@ pg_get_backends_memory_contexts(PG_FUNCTION_ARGS)
 		values[5] = Int64GetDatum(mem_stat->nblocks);
 		values[6] = Int64GetDatum(mem_stat->freespace);
 		values[7] = Int64GetDatum(mem_stat->freechunks);
+		values[8] = Int64GetDatum(mem_stat->totalspace - mem_stat->freespace);
+		SpinLockAcquire(&memCtxState->mutex);
+		values[9] = Int32GetDatum(memCtxState->proc_id);
+		SpinLockRelease(&memCtxState->mutex);
 
 		tuplestore_putvalues(rsinfo->setResult, rsinfo->setDesc, values, nulls);
-
 	}
 	pfree(mem_stat);
 	FreeFile(fp);
 	/* Delete the temp file that stores memory stats */
 	unlink(tmpfilename);
+	SpinLockAcquire(&memCtxState->mutex);
+	memCtxState->in_use = false;
+	SpinLockRelease(&memCtxState->mutex);
 
 	return (Datum) 0;
 }
