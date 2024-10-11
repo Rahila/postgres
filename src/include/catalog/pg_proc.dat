@@ -8418,13 +8418,13 @@
 
 # publishing memory contexts of the specified backend
 { oid => '2173', descr => 'publish memory contexts of the specified backend',
-  proname => 'pg_get_backends_memory_contexts', provolatile => 'v',
+  proname => 'pg_get_remote_backend_memory_contexts', provolatile => 'v',
   prorows => '100', proretset => 't', proparallel => 'r',
   prorettype => 'record', proargtypes => 'int4',
   proallargtypes => '{int4,text,text,text,_int4,int4,int4,int4,int4,int4,int4}',
   proargmodes => '{i,o,o,o,o,o,o,o,o,o,o}',
   proargnames => '{oid, name, ident, type, path, total_bytes, total_nblocks, free_bytes, free_chunks, used_bytes, pid}',
-  prosrc => 'pg_get_backends_memory_contexts' },
+  prosrc => 'pg_get_remote_backend_memory_contexts' },
 
 # non-persistent series generator
 { oid => '1066', descr => 'non-persistent series generator',

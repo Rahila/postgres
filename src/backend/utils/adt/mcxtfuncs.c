@@ -301,8 +301,23 @@ pg_log_backend_memory_contexts(PG_FUNCTION_ARGS)
 	PG_RETURN_BOOL(true);
 }
 
+/*
+ * pg_get_remote_backend_memory_contexts
+ *		Signal a backend or an auxiliary process to send its memory contexts.
+ *
+ * On receipt of this signal, a backend or an auxiliary process sets the flag
+ * in the signal handler, which causes the next CHECK_FOR_INTERRUPTS()
+ * or process-specific interrupt handler to copy the memory context statistics
+ * in a shared memory space. The statistics that do not fit in shared
+ * memory area are copied to a file by the backend.
+ *
+ * Wait for the backend to send signal on the condition variable after
+ * writing statistics to a shared memory and if needed to a temp file.
+ * Once condition variable comes out of sleep check if the required
+ * backends statistics are available to read and display. 
+ */
 Datum
-pg_get_backends_memory_contexts(PG_FUNCTION_ARGS)
+pg_get_remote_backend_memory_contexts(PG_FUNCTION_ARGS)
 {
 	int			pid = PG_GETARG_INT32(0);
 	PGPROC	   *proc;
@@ -312,6 +327,8 @@ pg_get_backends_memory_contexts(PG_FUNCTION_ARGS)
 	MemoryContextParams *mem_stat = NULL;
 	char		tmpfilename[MAXPGPATH];
 	FILE	   *fp = NULL;
+	int *var = NULL;
+	int n;
 
 	InitMaterializedSRF(fcinfo, 0);
 
@@ -356,13 +373,12 @@ pg_get_backends_memory_contexts(PG_FUNCTION_ARGS)
 	 */
 	while (1)
 	{
+		SpinLockAcquire(&memCtxState->mutex);
 		/*
 		 * We expect to come out of sleep only when atleast one backend has
 		 * published some memcontext information
-		 */
-		SpinLockAcquire(&memCtxState->mutex);
-
-		/* Make sure that all the stats has been published
+		 *
+		 * Make sure that all the stats has been published
 		 * and the information belongs to pid we requested information
 		 * for, Otherwise loop back and wait for the correct backend to
 		 * publish the information
@@ -381,7 +397,7 @@ pg_get_backends_memory_contexts(PG_FUNCTION_ARGS)
 		}
 	}
 	/* Backend has finished publishing the stats, read them */
-	for (i = 0; i < 29; i++)
+	for (i = 0; i < memCtxState->in_memory_stats; i++)
 	{
 		ArrayType  *path_array;
 		int			path_length;
@@ -413,12 +429,18 @@ pg_get_backends_memory_contexts(PG_FUNCTION_ARGS)
 
 		tuplestore_putvalues(rsinfo->setResult, rsinfo->setDesc, values, nulls);
 	}
+	/* No more stats to read return */
+	if (memCtxState->total_stats == i)
+	{
+		memCtxState->in_use = false;
+		SpinLockRelease(&memCtxState->mutex);
+		PG_RETURN_BOOL(false);
+	}
 	/* Compute name for temp mem stat file */
 	snprintf(tmpfilename, MAXPGPATH, "%s/%s.memstats.%d",
 			 PG_TEMP_FILES_DIR, PG_TEMP_FILE_PREFIX,
 			 memCtxState->proc_id);
 	SpinLockRelease(&memCtxState->mutex);
-
 	ConditionVariableCancelSleep();
 
 	/* Open file */
@@ -478,13 +500,13 @@ pg_get_backends_memory_contexts(PG_FUNCTION_ARGS)
 
 		tuplestore_putvalues(rsinfo->setResult, rsinfo->setDesc, values, nulls);
 	}
+	SpinLockAcquire(&memCtxState->mutex);
+	memCtxState->in_use = false;
+	SpinLockRelease(&memCtxState->mutex);
 	pfree(mem_stat);
 	FreeFile(fp);
 	/* Delete the temp file that stores memory stats */
 	unlink(tmpfilename);
-	SpinLockAcquire(&memCtxState->mutex);
-	memCtxState->in_use = false;
-	SpinLockRelease(&memCtxState->mutex);
 
 	return (Datum) 0;
 }

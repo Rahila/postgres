@@ -1351,8 +1351,7 @@ ProcessGetMemoryContextInterrupt(void)
 	/* Store the memory context details in shared memory */
 
 	List	   *contexts;
-	int64		counter = 0;
-	FILE	   *fp;
+	FILE	   *fp = NULL;
 	char		tmpfilename[MAXPGPATH];
 
 	HASHCTL		ctl;
@@ -1377,7 +1376,7 @@ ProcessGetMemoryContextInterrupt(void)
 
 	/*
 	 * The hash table is used for constructing "path" column of
-	 * pg_get_backends_memory_contextis view, similar to its local backend
+	 * pg_get_remote_backend_memory_contextis view, similar to its local backend
 	 * couterpart.
 	 */
 	/* Make a new context that will contain the hash table, to ease the cleanup */
@@ -1390,25 +1389,18 @@ ProcessGetMemoryContextInterrupt(void)
 	ctl.entrysize = sizeof(MemoryContextId);
 	ctl.hcxt = stat_cxt;
 
-	context_id_lookup = hash_create("pg_get_backend_memory_contexts",
+	context_id_lookup = hash_create("pg_get_remote_backend_memory_contexts",
 									256,
 									&ctl,
 									HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
 
 	contexts = list_make1(TopMemoryContext);
 
-	/* Construct name for temp file */
-	snprintf(tmpfilename, MAXPGPATH, "%s/%s.memstats.%d",
-			 PG_TEMP_FILES_DIR, PG_TEMP_FILE_PREFIX,
-			 MyProcPid);
-
 	/*
 	 * As in OpenTemporaryFileInTablespace, try to make the temp-file
 	 * directory, ignoring errors.
 	 */
 	(void) MakePGDirectory(PG_TEMP_FILES_DIR);
-	/* Open file */
-	fp = AllocateFile(tmpfilename, PG_BINARY_A);
 
 	SpinLockAcquire(&memCtxState->mutex);
 	memCtxState->proc_id = MyProcPid;
@@ -1421,8 +1413,7 @@ ProcessGetMemoryContextInterrupt(void)
 
 		entry = (MemoryContextId *) hash_search(context_id_lookup, &cur,
 												HASH_ENTER, &found);
-		entry->context_id = context_id++;
-
+		entry->context_id = context_id;
 		/*
 		 * Figure out the transient context_id of this context and each of its
 		 * ancestors.
@@ -1455,10 +1446,10 @@ ProcessGetMemoryContextInterrupt(void)
 			memcpy(clipped_ident, cur->ident, idlen);
 			clipped_ident[idlen] = '\0';
 		}
-		if (counter <= 28)
+		if (context_id <= 28)
 		{
 			/* Copy statistics to shared memory */
-			PublishMemoryContext(cur, counter, path, (cur->ident ? clipped_ident : NULL));
+			PublishMemoryContext(cur, context_id, path, (cur->ident ? clipped_ident : NULL));
 		}
 		else
 		{
@@ -1468,26 +1459,29 @@ ProcessGetMemoryContextInterrupt(void)
 		/* Append the children of the current context to the main list */
 		for (MemoryContext c = cur->firstchild; c != NULL; c = c->nextchild)
 			contexts = lappend(contexts, c);
-
-		counter = counter + 1;
-
 		/*
 		 * Shared memory is full, release lock and write to file from next
 		 * iteration
 		 */
-		if (counter == 29)
+		context_id++;
+		if (context_id == 29)
 		{
+			memCtxState->in_memory_stats = context_id;
 			SpinLockRelease(&memCtxState->mutex);
+			/* Construct name for temp file */
+			snprintf(tmpfilename, MAXPGPATH, "%s/%s.memstats.%d",
+			 PG_TEMP_FILES_DIR, PG_TEMP_FILE_PREFIX,
+			 MyProcPid);
+			/* Open file to copy rest of the stats in the file */
+			fp = AllocateFile(tmpfilename, PG_BINARY_A);
 			if (fp == NULL)
 				break;
 		}
 	}
-	/* Release file */
-	if (fp && FreeFile(fp))
+	if (context_id < 29)
 	{
-		ereport(LOG,
-				(errcode_for_file_access(),
-				 errmsg("could not free file \"%s\": %m", tmpfilename)));
+		memCtxState->in_memory_stats = context_id;
+		SpinLockRelease(&memCtxState->mutex);
 	}
 
 	/* Delete the hash table memory context */
@@ -1498,8 +1492,17 @@ ProcessGetMemoryContextInterrupt(void)
 	 */
 	SpinLockAcquire(&memCtxState->mutex);
 	memCtxState->in_use = true;
+	memCtxState->total_stats = context_id;
 	SpinLockRelease(&memCtxState->mutex);
 	ConditionVariableBroadcast(&memCtxState->memctx_cv);
+
+	/* Release file */
+	if (fp && FreeFile(fp))
+	{
+		ereport(LOG,
+				(errcode_for_file_access(),
+				 errmsg("could not free file \"%s\": %m", tmpfilename)));
+	}
 }
 
 static void
