@@ -117,6 +117,7 @@ extern MemoryContext AllocSetContextCreateInternal(MemoryContext parent,
 												   Size minContextSize,
 												   Size initBlockSize,
 												   Size maxBlockSize);
+
 /* Shared memory state for Memory Context Statistics reporting */
 typedef struct MemoryContextInfo
 {
@@ -137,8 +138,8 @@ typedef struct MemoryContextState
 	slock_t		mutex;
 	bool		in_use;
 	int			proc_id;
-	int		in_memory_stats;
-	int		total_stats;
+	int			in_memory_stats;
+	int			total_stats;
 	MemoryContextInfo memctx_infos[30];
 }			MemoryContextState;
 

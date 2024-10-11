@@ -314,7 +314,7 @@ pg_log_backend_memory_contexts(PG_FUNCTION_ARGS)
  * Wait for the backend to send signal on the condition variable after
  * writing statistics to a shared memory and if needed to a temp file.
  * Once condition variable comes out of sleep check if the required
- * backends statistics are available to read and display. 
+ * backends statistics are available to read and display.
  */
 Datum
 pg_get_remote_backend_memory_contexts(PG_FUNCTION_ARGS)
@@ -327,8 +327,6 @@ pg_get_remote_backend_memory_contexts(PG_FUNCTION_ARGS)
 	MemoryContextParams *mem_stat = NULL;
 	char		tmpfilename[MAXPGPATH];
 	FILE	   *fp = NULL;
-	int *var = NULL;
-	int n;
 
 	InitMaterializedSRF(fcinfo, 0);
 
@@ -367,6 +365,7 @@ pg_get_remote_backend_memory_contexts(PG_FUNCTION_ARGS)
 				(errmsg("could not send signal to process %d: %m", pid)));
 		PG_RETURN_BOOL(false);
 	}
+
 	/*
 	 * Wait for a backend to publish stats, indicated when in_use is set true
 	 * by the backend
@@ -374,14 +373,14 @@ pg_get_remote_backend_memory_contexts(PG_FUNCTION_ARGS)
 	while (1)
 	{
 		SpinLockAcquire(&memCtxState->mutex);
+
 		/*
 		 * We expect to come out of sleep only when atleast one backend has
 		 * published some memcontext information
 		 *
-		 * Make sure that all the stats has been published
-		 * and the information belongs to pid we requested information
-		 * for, Otherwise loop back and wait for the correct backend to
-		 * publish the information
+		 * Make sure that all the stats has been published and the information
+		 * belongs to pid we requested information for, Otherwise loop back
+		 * and wait for the correct backend to publish the information
 		 */
 		if (memCtxState->in_use == true && memCtxState->proc_id == pid)
 			break;
@@ -389,7 +388,7 @@ pg_get_remote_backend_memory_contexts(PG_FUNCTION_ARGS)
 			SpinLockRelease(&memCtxState->mutex);
 
 		if (ConditionVariableTimedSleep(&memCtxState->memctx_cv, 120000,
-							   WAIT_EVENT_MEM_CTX_PUBLISH))
+										WAIT_EVENT_MEM_CTX_PUBLISH))
 		{
 			ereport(WARNING,
 					(errmsg("Wait for %d process to publish stats timed out, try again", pid)));

@@ -1358,9 +1358,10 @@ ProcessGetMemoryContextInterrupt(void)
 	HTAB	   *context_id_lookup;
 	int			context_id = 0;
 	bool		found;
-	MemoryContext	stat_cxt;
+	MemoryContext stat_cxt;
 
 	PublishMemoryContextPending = false;
+
 	/*
 	 * Shared memory is not available to be written Hence return without
 	 * clearing the PublishMemoryContextPending flag, so that this gets called
@@ -1376,15 +1377,19 @@ ProcessGetMemoryContextInterrupt(void)
 
 	/*
 	 * The hash table is used for constructing "path" column of
-	 * pg_get_remote_backend_memory_contextis view, similar to its local backend
-	 * couterpart.
+	 * pg_get_remote_backend_memory_contextis view, similar to its local
+	 * backend couterpart.
 	 */
-	/* Make a new context that will contain the hash table, to ease the cleanup */
-	
+
+	/*
+	 * Make a new context that will contain the hash table, to ease the
+	 * cleanup
+	 */
+
 	stat_cxt = AllocSetContextCreate(CurrentMemoryContext,
-                                                                   "Memory context statistics",
-                                                                   ALLOCSET_DEFAULT_SIZES);
-	
+									 "Memory context statistics",
+									 ALLOCSET_DEFAULT_SIZES);
+
 	ctl.keysize = sizeof(MemoryContext);
 	ctl.entrysize = sizeof(MemoryContextId);
 	ctl.hcxt = stat_cxt;
@@ -1414,6 +1419,7 @@ ProcessGetMemoryContextInterrupt(void)
 		entry = (MemoryContextId *) hash_search(context_id_lookup, &cur,
 												HASH_ENTER, &found);
 		entry->context_id = context_id;
+
 		/*
 		 * Figure out the transient context_id of this context and each of its
 		 * ancestors.
@@ -1459,6 +1465,7 @@ ProcessGetMemoryContextInterrupt(void)
 		/* Append the children of the current context to the main list */
 		for (MemoryContext c = cur->firstchild; c != NULL; c = c->nextchild)
 			contexts = lappend(contexts, c);
+
 		/*
 		 * Shared memory is full, release lock and write to file from next
 		 * iteration
@@ -1470,8 +1477,8 @@ ProcessGetMemoryContextInterrupt(void)
 			SpinLockRelease(&memCtxState->mutex);
 			/* Construct name for temp file */
 			snprintf(tmpfilename, MAXPGPATH, "%s/%s.memstats.%d",
-			 PG_TEMP_FILES_DIR, PG_TEMP_FILE_PREFIX,
-			 MyProcPid);
+					 PG_TEMP_FILES_DIR, PG_TEMP_FILE_PREFIX,
+					 MyProcPid);
 			/* Open file to copy rest of the stats in the file */
 			fp = AllocateFile(tmpfilename, PG_BINARY_A);
 			if (fp == NULL)
@@ -1486,9 +1493,9 @@ ProcessGetMemoryContextInterrupt(void)
 
 	/* Delete the hash table memory context */
 	MemoryContextDelete(stat_cxt);
+
 	/*
-	 * Signal the waiting client backend after setting the 
-	 * exit condition flag 
+	 * Signal the waiting client backend after setting the exit condition flag
 	 */
 	SpinLockAcquire(&memCtxState->mutex);
 	memCtxState->in_use = true;
