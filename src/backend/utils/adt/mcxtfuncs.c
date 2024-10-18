@@ -366,7 +366,6 @@ pg_get_remote_backend_memory_contexts(PG_FUNCTION_ARGS)
 	LWLockRelease(&memCtxState->lw_lock);
 	if (SendProcSignal(pid, PROCSIG_GET_MEMORY_CONTEXT, procNumber) < 0)
 	{
-		/* Again, just a warning to allow loops */
 		ereport(WARNING,
 				(errmsg("could not send signal to process %d: %m", pid)));
 		PG_RETURN_BOOL(false);
@@ -412,11 +411,11 @@ pg_get_remote_backend_memory_contexts(PG_FUNCTION_ARGS)
 		memset(values, 0, sizeof(values));
 		memset(nulls, 0, sizeof(nulls));
 
-		if (memCtxState->memctx_infos[i].name)
+		if (strlen(memCtxState->memctx_infos[i].name) != 0)
 			values[0] = CStringGetTextDatum(memCtxState->memctx_infos[i].name);
 		else
 			nulls[0] = true;
-		if (memCtxState->memctx_infos[i].ident)
+		if (strlen(memCtxState->memctx_infos[i].ident) != 0)
 			values[1] = CStringGetTextDatum(memCtxState->memctx_infos[i].ident);
 		else
 			nulls[1] = true;
@@ -484,12 +483,12 @@ pg_get_remote_backend_memory_contexts(PG_FUNCTION_ARGS)
 		}
 
 		path_length = mem_stat->path_length;
-		if (mem_stat->name)
+		if (strlen(mem_stat->name) != 0)
 			values[0] = CStringGetTextDatum(mem_stat->name);
 		else
 			nulls[0] = true;
 
-		if (mem_stat->ident)
+		if (strlen(mem_stat->ident) != 0)
 			values[1] = CStringGetTextDatum(mem_stat->ident);
 		else
 			nulls[1] = true;

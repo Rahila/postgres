@@ -1525,8 +1525,13 @@ PublishMemoryContext(MemoryContext context, int64 counter, List *path, char *cli
 	MemoryContextCounters stat;
 	char	   *type;
 
-	Assert(strlen(context->name) < MEMORY_CONTEXT_IDENT_DISPLAY_SIZE);
-	strncpy(memCtxState->memctx_infos[counter].name, context->name, strlen(context->name));
+	if (context->name != NULL)
+	{
+		Assert(strlen(context->name) < MEMORY_CONTEXT_IDENT_DISPLAY_SIZE);
+		strncpy(memCtxState->memctx_infos[counter].name, context->name, strlen(context->name));
+	}
+	else
+		memCtxState->memctx_infos[counter].name[0] = '\0';
 
 	if (clipped_ident != NULL)
 	{
@@ -1536,6 +1541,9 @@ PublishMemoryContext(MemoryContext context, int64 counter, List *path, char *cli
 			strncpy(memCtxState->memctx_infos[counter].name, clipped_ident, strlen(clipped_ident));
 		}
 	}
+	else
+		memCtxState->memctx_infos[counter].ident[0] = '\0';
+	
 	memCtxState->memctx_infos[counter].path_length = list_length(path);
 	foreach_int(i, path)
 		memCtxState->memctx_infos[counter].path[foreach_current_index(i)] = Int32GetDatum(i);
@@ -1581,9 +1589,18 @@ PublishMemoryContextToFile(MemoryContext context, FILE *fp, List *path, char *cl
 	char	   *type;
 
 	mem_stat = palloc0(sizeof(MemoryContextParams));
-
-	Assert(strlen(context->name) < MEMORY_CONTEXT_IDENT_DISPLAY_SIZE);
-	strncpy(mem_stat->name, context->name, strlen(context->name));
+	/*
+	 * Assuming the context name will not exceed context identifier display size
+	 * XXX Reduce the limit for name length to correctly reflect practical examples
+         * XXX  Add handling similar to clipped_ident of name exceeds the size limit
+	 */
+	if (context->name != NULL)
+	{
+		Assert(strlen(context->name) < MEMORY_CONTEXT_IDENT_DISPLAY_SIZE);
+		strncpy(mem_stat->name, context->name, strlen(context->name));
+	}
+	else
+		mem_stat->name[0] = '\0';
 
 	if (clipped_ident != NULL)
 	{
@@ -1593,6 +1610,9 @@ PublishMemoryContextToFile(MemoryContext context, FILE *fp, List *path, char *cl
 			strncpy(mem_stat->name, clipped_ident, strlen(clipped_ident));
 		}
 	}
+	else
+		mem_stat->ident[0] = '\0';
+
 	mem_stat->path_length = list_length(path);
 	foreach_int(i, path)
 		mem_stat->path[foreach_current_index(i)] = Int32GetDatum(i);
