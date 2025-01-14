@@ -934,9 +934,16 @@ void
 dsm_unpin_mapping(dsm_segment *seg)
 {
 	Assert(seg->resowner == NULL);
-	ResourceOwnerEnlarge(CurrentResourceOwner);
-	seg->resowner = CurrentResourceOwner;
-	ResourceOwnerRememberDSM(seg->resowner, seg);
+
+	if (CurrentResourceOwner && !IsResourceOwnerReleasing(CurrentResourceOwner))
+	{
+		ResourceOwnerEnlarge(CurrentResourceOwner);
+		seg->resowner = CurrentResourceOwner;
+		ResourceOwnerRememberDSM(seg->resowner, seg);
+	}
+	else
+		/* Could not unpin */
+		seg->resowner = NULL;
 }
 
 /*
@@ -1202,9 +1209,6 @@ dsm_create_descriptor(void)
 {
 	dsm_segment *seg;
 
-	if (CurrentResourceOwner)
-		ResourceOwnerEnlarge(CurrentResourceOwner);
-
 	seg = MemoryContextAlloc(TopMemoryContext, sizeof(dsm_segment));
 	dlist_push_head(&dsm_segment_list, &seg->node);
 
@@ -1214,9 +1218,14 @@ dsm_create_descriptor(void)
 	seg->mapped_address = NULL;
 	seg->mapped_size = 0;
 
-	seg->resowner = CurrentResourceOwner;
-	if (CurrentResourceOwner)
+	if (CurrentResourceOwner && !IsResourceOwnerReleasing(CurrentResourceOwner))
+	{
+		ResourceOwnerEnlarge(CurrentResourceOwner);
+		seg->resowner = CurrentResourceOwner;
 		ResourceOwnerRememberDSM(CurrentResourceOwner, seg);
+	}
+	else
+		seg->resowner = NULL;
 
 	slist_init(&seg->on_detach);
 

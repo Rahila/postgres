@@ -163,5 +163,6 @@ extern void ReleaseAuxProcessResources(bool isCommit);
 struct LOCALLOCK;
 extern void ResourceOwnerRememberLock(ResourceOwner owner, struct LOCALLOCK *locallock);
 extern void ResourceOwnerForgetLock(ResourceOwner owner, struct LOCALLOCK *locallock);
+extern bool IsResourceOwnerReleasing(ResourceOwner owner);
 
 #endif							/* RESOWNER_H */

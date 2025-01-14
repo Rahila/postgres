@@ -1082,3 +1082,12 @@ ResourceOwnerForgetLock(ResourceOwner owner, LOCALLOCK *locallock)
 	elog(ERROR, "lock reference %p is not owned by resource owner %s",
 		 locallock, owner->name);
 }
+
+/*
+ * Returns true if resource owner is being released
+ */
+bool
+IsResourceOwnerReleasing(ResourceOwner owner)
+{
+	return(owner->releasing);
+}

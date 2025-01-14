@@ -1282,7 +1282,10 @@ create_internal(void *place, size_t size,
 	 */
 	area = palloc(sizeof(dsa_area));
 	area->control = control;
-	area->resowner = CurrentResourceOwner;
+	if (CurrentResourceOwner && !IsResourceOwnerReleasing(CurrentResourceOwner))
+		area->resowner = CurrentResourceOwner;
+	else
+		area->resowner = NULL;
 	memset(area->segment_maps, 0, sizeof(dsa_segment_map) * DSA_MAX_SEGMENTS);
 	area->high_segment_index = 0;
 	area->freed_segment_counter = 0;
@@ -1338,7 +1341,10 @@ attach_internal(void *place, dsm_segment *segment, dsa_handle handle)
 	/* Build the backend-local area object. */
 	area = palloc(sizeof(dsa_area));
 	area->control = control;
-	area->resowner = CurrentResourceOwner;
+	if (CurrentResourceOwner && !IsResourceOwnerReleasing(CurrentResourceOwner))
+		area->resowner = CurrentResourceOwner;
+	else
+		area->resowner = NULL;
 	memset(&area->segment_maps[0], 0,
 		   sizeof(dsa_segment_map) * DSA_MAX_SEGMENTS);
 	area->high_segment_index = 0;
