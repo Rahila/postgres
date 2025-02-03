@@ -28532,6 +28532,50 @@ acl      | {postgres=arwdDxtm/postgres,foo=r/postgres}
       <row>
        <entry role="func_table_entry"><para role="func_signature">
         <indexterm>
+         <primary>pg_get_process_memory_contexts</primary>
+        </indexterm>
+        <function>pg_get_process_memory_contexts</function> ( <parameter>pid</parameter> <type>integer</type>, <parameter>get_summary</parameter> <type>boolean</type>, <parameter>num_of_tries</parameter> <type>integer</type> )
+        <returnvalue>setof record</returnvalue>
+       </para>
+       <para>
+        This function handles requests to display the memory contexts of a
+        PostgreSQL process with the specified process ID (PID). It takes three
+        arguments: <parameter>PID</parameter>, <parameter>get_summary</parameter>
+        and <parameter>num_of_tries</parameter>. The function can send requests
+        to both backend and auxiliary processes.
+
+        After receiving memory context statistics from the target process, it
+        returns the results as one row per context. If all the contexts don't
+        fit within the pre-determined size limit, the remaining context statistics
+        are aggregated and a cumulative total is displayed. The num_agg_contexts
+        column indicates the number of contexts aggregated in the displayed
+        statistics. The num_agg_contexts value is typically 1, meaning that each
+        context's statistics are displayed separately.
+
+        When <parameter>get_summary</parameter> is set to true, statistics
+        for memory contexts at levels 1 and 2 are displayed, with level 1
+        representing the root node (i.e., TopMemoryContext).
+        Each level 2 context's statistics represent an aggregate of all its
+        child contexts' statistics, with num_agg_contexts indicating the number
+        of these aggregated child contexts.
+
+        When <parameter>get_summary</parameter> is set to false, the
+        num_agg_contexts value is 1, indicating that individual statistics are
+        being displayed.
+
+        <parameter>num_of_tries</parameter> indicates the number of times
+        the client will wait for the latest statistics. The wait per try is 1
+        second. This parameter can be increased if the user anticipates a delay
+        in the response from the reporting process. Conversely, if users are
+        frequently and periodically querying the process for statistics, or if
+        there are concurrent requests for statistics of the same process,
+        lowering the parameter might help achieve a faster response.
+       </para></entry>
+      </row>
+
+      <row>
+       <entry role="func_table_entry"><para role="func_signature">
+        <indexterm>
          <primary>pg_reload_conf</primary>
         </indexterm>
         <function>pg_reload_conf</function> ()
@@ -28645,6 +28689,23 @@ LOG:  Grand total: 1651920 bytes in 201 blocks; 622360 free (88 chunks); 1029560
     100 child contexts are logged, along with a summary of the remaining contexts.
     Note that frequent calls to this function could incur significant overhead,
     because it may generate a large number of log messages.
+   </para>
+
+   <para>
+    <function>pg_get_process_memory_contexts</function> can be used
+    to request the memory contexts statistics of any postgres process. For example:
+<programlisting>
+postgres=# SELECT * FROM pg_get_process_memory_contexts(
+  (SELECT pid FROM pg_stat_activity
+    WHERE backend_type = 'checkpointer')
+  , false, 5) LIMIT 1;
+       name       | ident |   type   | path | total_bytes | total_nblocks | free_bytes | free_chunks | used_bytes | num_
+agg_contexts |         stats_timestamp
+------------------+-------+----------+------+-------------+---------------+------------+-------------+------------+-----
+-------------+----------------------------------
+ TopMemoryContext |       | AllocSet | {1}  |      102664 |             4 |       3008 |           2 |      99656 |
+           1 | 2025-03-04 10:01:57.590543+05:30
+</programlisting>
    </para>
 
   </sect2>

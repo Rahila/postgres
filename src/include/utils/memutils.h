@@ -18,6 +18,9 @@
 #define MEMUTILS_H
 
 #include "nodes/memnodes.h"
+#include "storage/condition_variable.h"
+#include "storage/lmgr.h"
+#include "utils/dsa.h"
 
 
 /*
@@ -48,7 +51,10 @@
 
 #define AllocHugeSizeIsValid(size)	((Size) (size) <= MaxAllocHugeSize)
 
+#define MEMORY_CONTEXT_IDENT_SHMEM_SIZE 128
 
+#define MEM_CONTEXT_MAX_LEVEL	64
+#define MAX_NUM_DEFAULT_SEGMENTS 8
 /*
  * Standard top-level memory contexts.
  *
@@ -318,5 +324,68 @@ pg_memory_is_all_zeros(const void *ptr, size_t len)
 
 	return true;
 }
+
+/* Dynamic shared memory state for statistics per context */
+typedef struct MemoryContextEntry
+{
+	dsa_pointer name;
+	dsa_pointer ident;
+	dsa_pointer path;
+	const char *type;
+	int			path_length;
+	int64		totalspace;
+	int64		nblocks;
+	int64		freespace;
+	int64		freechunks;
+	int			num_agg_stats;
+} MemoryContextEntry;
+
+/*
+ * Static shared memory state representing the DSA area
+ * created for memory context statistics reporting.
+ * Single DSA area is created and used by all the processes,
+ * each having its specific dsa allocations for sharing memory
+ * statistics, tracked by per backend static shared memory state.
+ */
+typedef struct MemoryContextState
+{
+	dsa_handle	memstats_dsa_handle;
+	LWLock		lw_lock;
+} MemoryContextState;
+
+/*
+ * Per backend static shared memory state for memory
+ * context statistics reporting.
+ */
+typedef struct MemoryContextBackendState
+{
+	ConditionVariable memctx_cv;
+	LWLock		lw_lock;
+	int			proc_id;
+	int			total_stats;
+	bool		get_summary;
+	dsa_pointer memstats_dsa_pointer;
+	TimestampTz stats_timestamp;
+} MemoryContextBackendState;
+
+
+/*
+ * MemoryContextId
+ *		Used for storage of transient identifiers for
+ *		pg_get_backend_memory_contexts.
+ */
+typedef struct MemoryContextId
+{
+	MemoryContext context;
+	int			context_id;
+} MemoryContextId;
+
+extern PGDLLIMPORT MemoryContextBackendState *memCtxState;
+extern PGDLLIMPORT MemoryContextState *memCtxArea;
+extern void ProcessGetMemoryContextInterrupt(void);
+extern const char *ContextTypeToString(NodeTag type);
+extern void HandleGetMemoryContextInterrupt(void);
+extern void MemCtxShmemInit(void);
+extern void MemCtxBackendShmemInit(void);
 
 #endif							/* MEMUTILS_H */
