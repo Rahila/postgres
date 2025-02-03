@@ -18,6 +18,9 @@
 #define MEMUTILS_H
 
 #include "nodes/memnodes.h"
+#include "storage/condition_variable.h"
+#include "storage/lmgr.h"
+#include "utils/dsa.h"
 
 
 /*
@@ -48,7 +51,12 @@
 
 #define AllocHugeSizeIsValid(size)	((Size) (size) <= MaxAllocHugeSize)
 
+#define MEMORY_CONTEXT_IDENT_DISPLAY_SIZE	1024
 
+#define MEM_CONTEXT_SHMEM_STATS_SIZE	30
+#define MEM_CONTEXT_MAX_LEVEL	64
+#define MAX_TYPE_STRING_LENGTH	64
+#define MAX_NUM_DEFAULT_SEGMENTS 8
 /*
  * Standard top-level memory contexts.
  *
@@ -318,5 +326,56 @@ pg_memory_is_all_zeros(const void *ptr, size_t len)
 
 	return true;
 }
+
+/* Dynamic shared memory state for memory context statistics reporting */
+typedef struct MemoryContextEntry
+{
+	/*
+	 * XXX isn't 2 x 1kB for every context a bit too much? Maybe better to
+	 * make it variable-length?
+	 */
+	char		name[MEMORY_CONTEXT_IDENT_DISPLAY_SIZE];
+	char		ident[MEMORY_CONTEXT_IDENT_DISPLAY_SIZE];
+	Datum		path[MEM_CONTEXT_MAX_LEVEL];
+	const char *type;
+	int			path_length;
+	int64		totalspace;
+	int64		nblocks;
+	int64		freespace;
+	int64		freechunks;
+	int			num_agg_stats;
+} MemoryContextEntry;
+
+/* Shared memory state for memory context statistics reporting */
+typedef struct MemoryContextState
+{
+	ConditionVariable memctx_cv;
+	LWLock		lw_lock;
+	int			proc_id;
+	int			num_individual_stats;
+	int			total_stats;
+	bool		get_summary;
+	dsa_handle	memstats_dsa_handle;
+	dsa_pointer memstats_dsa_pointer;
+	TimestampTz stats_timestamp;
+	bool		request_pending;
+} MemoryContextState;
+
+/*
+ * MemoryContextId
+ *		Used for storage of transient identifiers for
+ *		pg_get_backend_memory_contexts.
+ */
+typedef struct MemoryContextId
+{
+	MemoryContext context;
+	int			context_id;
+}			MemoryContextId;
+
+extern PGDLLIMPORT MemoryContextState *memCtxState;
+extern void ProcessGetMemoryContextInterrupt(void);
+extern const char *AssignContextType(NodeTag type);
+extern void HandleGetMemoryContextInterrupt(void);
+extern void MemCtxShmemInit(void);
 
 #endif							/* MEMUTILS_H */
