@@ -1421,10 +1421,12 @@ ProcessGetMemoryContextInterrupt(void)
 	int			max_stats;
 	int			idx = MyProcNumber;
 	int			stats_count = 0;
+	int	seg_size = 0;
 	MemoryContextCounters stat;
 
 	check_stack_depth();
 	PublishMemoryContextPending = false;
+	
 	LWLockAcquire(&memCtxState[idx].lw_lock, LW_EXCLUSIVE);
 	memCtxState[idx].request_pending = false;
 	LWLockRelease(&memCtxState[idx].lw_lock);
@@ -1477,8 +1479,44 @@ ProcessGetMemoryContextInterrupt(void)
 	 */
 	stats_count = (stats_count > max_stats) ? max_stats : stats_count;
 
+	seg_size = (stats_count * sizeof(MemoryContextEntry)) > DSA_MIN_SEGMENT_SIZE ?
+				stats_count * sizeof(MemoryContextEntry) : DSA_MIN_SEGMENT_SIZE;
 	/* Attach to DSA segment */
 	LWLockAcquire(&memCtxState[idx].lw_lock, LW_EXCLUSIVE);
+	/*
+	 * Create a DSA segment with maximum size of 16MB, send handle to the
+	 * publishing process for storing the stats. If number of contexts exceed
+	 * 16MB, a cumulative total is stored for such contexts.
+	 */
+	if (memCtxState[idx].memstats_dsa_handle == DSA_HANDLE_INVALID)
+	{
+		MemoryContext oldcontext = CurrentMemoryContext;
+		dsa_handle handle;
+		
+		MemoryContextSwitchTo(TopMemoryContext);
+
+		area = dsa_create_ext(memCtxState[idx].lw_lock.tranche,
+							  MAX_NUM_DEFAULT_SEGMENTS * DSA_DEFAULT_INIT_SEGMENT_SIZE,
+							  MAX_NUM_DEFAULT_SEGMENTS * DSA_DEFAULT_INIT_SEGMENT_SIZE);
+		
+		handle = dsa_get_handle(area);
+		MemoryContextSwitchTo(oldcontext);
+		
+		dsa_pin_mapping(area);
+
+		/*
+		 * Pin the dsa area even if the creating backend exits, this is to
+		 * make sure the area remains attachable even if current client exits
+		 */
+		dsa_pin(area);
+		/* Set the handle in shared memory */
+		memCtxState[idx].memstats_dsa_handle = handle;
+	}
+/*	else
+	{
+		area = dsa_attach(memCtxState[procNumber].memstats_dsa_handle);
+	}*/
+/*
 	if (area == NULL)
 	{
 		MemoryContext oldcontext = CurrentMemoryContext;
@@ -1487,17 +1525,22 @@ ProcessGetMemoryContextInterrupt(void)
 		area = dsa_attach(memCtxState[idx].memstats_dsa_handle);
 		dsa_pin_mapping(area);
 		MemoryContextSwitchTo(oldcontext);
-	}
+	}*/
 	memCtxState[idx].proc_id = MyProcPid;
 
-	/* Free the memory allocated previously by the same process. */
+	/* Free the memory allocated previously by the same process. 
 	if (DsaPointerIsValid(memCtxState[idx].memstats_dsa_pointer))
 	{
 		dsa_free(area, memCtxState[idx].memstats_dsa_pointer);
 		memCtxState[idx].memstats_dsa_pointer = InvalidDsaPointer;
+	}*/
+	if (!DsaPointerIsValid(memCtxState[idx].memstats_dsa_pointer))
+	{
+	/*memCtxState[idx].memstats_dsa_pointer = dsa_allocate0(area,
+														  stats_count * sizeof(MemoryContextEntry));*/
+		memCtxState[idx].memstats_dsa_pointer = dsa_allocate0(area,
+							 MAX_NUM_DEFAULT_SEGMENTS * DSA_DEFAULT_INIT_SEGMENT_SIZE);
 	}
-	memCtxState[idx].memstats_dsa_pointer = dsa_allocate0(area,
-														  stats_count * sizeof(MemoryContextEntry));
 	meminfo = (MemoryContextEntry *) dsa_get_address(area,
 													 memCtxState[idx].memstats_dsa_pointer);
 

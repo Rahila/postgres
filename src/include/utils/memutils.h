@@ -51,7 +51,7 @@
 
 #define AllocHugeSizeIsValid(size)	((Size) (size) <= MaxAllocHugeSize)
 
-#define MEMORY_CONTEXT_IDENT_DISPLAY_SIZE	1024
+#define MEMORY_CONTEXT_IDENT_DISPLAY_SIZE	128
 
 #define MEM_CONTEXT_SHMEM_STATS_SIZE	30
 #define MEM_CONTEXT_MAX_LEVEL	64

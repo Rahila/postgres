@@ -351,7 +351,6 @@ pg_get_process_memory_contexts(PG_FUNCTION_ARGS)
 	int			i;
 	ReturnSetInfo *rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
 	dsa_area   *area;
-	dsa_handle	handle;
 	MemoryContextEntry *memctx_info;
 	int			num_retries = 0;
 	TimestampTz curr_timestamp;
@@ -419,37 +418,7 @@ pg_get_process_memory_contexts(PG_FUNCTION_ARGS)
 	}
 	memCtxState[procNumber].request_pending = true;
 	memCtxState[procNumber].get_summary = get_summary;
-
-	/*
-	 * Create a DSA segment with maximum size of 16MB, send handle to the
-	 * publishing process for storing the stats. If number of contexts exceed
-	 * 16MB, a cumulative total is stored for such contexts.
-	 */
-	if (memCtxState[procNumber].memstats_dsa_handle == DSA_HANDLE_INVALID)
-	{
-
-		LWLockRelease(&memCtxState[procNumber].lw_lock);
-		area = dsa_create_ext(memCtxState[procNumber].lw_lock.tranche,
-							  DSA_DEFAULT_INIT_SEGMENT_SIZE,
-							  MAX_NUM_DEFAULT_SEGMENTS *
-							  DSA_DEFAULT_INIT_SEGMENT_SIZE);
-		handle = dsa_get_handle(area);
-
-		/*
-		 * Pin the dsa area even if the creating backend exits, this is to
-		 * make sure the area remains attachable even if current client exits
-		 */
-		dsa_pin(area);
-		/* Set the handle in shared memory */
-		LWLockAcquire(&memCtxState[procNumber].lw_lock, LW_EXCLUSIVE);
-		memCtxState[procNumber].memstats_dsa_handle = handle;
-		LWLockRelease(&memCtxState[procNumber].lw_lock);
-	}
-	else
-	{
-		LWLockRelease(&memCtxState[procNumber].lw_lock);
-		area = dsa_attach(memCtxState[procNumber].memstats_dsa_handle);
-	}
+	LWLockRelease(&memCtxState[procNumber].lw_lock);
 
 	curr_timestamp = GetCurrentTimestamp();
 
@@ -542,6 +511,7 @@ pg_get_process_memory_contexts(PG_FUNCTION_ARGS)
 
 	}
 
+	area = dsa_attach(memCtxState[procNumber].memstats_dsa_handle);
 	/* We should land here only with a valid memstats_dsa_pointer */
 	Assert(DsaPointerIsValid(memCtxState[procNumber].memstats_dsa_pointer));
 	memctx_info = (MemoryContextEntry *) dsa_get_address(area,
