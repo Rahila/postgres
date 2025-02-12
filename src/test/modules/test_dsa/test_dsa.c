@@ -13,6 +13,8 @@
 #include "postgres.h"
 
 #include "fmgr.h"
+#include "storage/proc.h"
+#include "storage/procarray.h"
 #include "storage/lwlock.h"
 #include "utils/dsa.h"
 #include "utils/resowner.h"
@@ -109,5 +111,24 @@ test_dsa_resowners(PG_FUNCTION_ARGS)
 
 	dsa_detach(a);
 
+	PG_RETURN_VOID();
+}
+
+PG_FUNCTION_INFO_V1(test_dsa_interrupt);
+Datum
+test_dsa_interrupt(PG_FUNCTION_ARGS)
+{
+	int			pid = PG_GETARG_INT32(0);
+	PGPROC *proc;
+	int procNumber;
+	
+	proc = BackendPidGetProc(pid);
+	procNumber = GetNumberFromPGProc(proc);
+	if (SendProcSignal(pid, PROCSIG_TEST_DSA, procNumber) < 0)
+	{
+		ereport(WARNING,
+				(errmsg("could not send signal to process %d: %m", pid)));
+		PG_RETURN_VOID();
+	}
 	PG_RETURN_VOID();
 }

@@ -690,6 +690,9 @@ procsignal_sigusr1_handler(SIGNAL_ARGS)
 
 	if (CheckProcSignal(PROCSIG_GET_MEMORY_CONTEXT))
 		HandleGetMemoryContextInterrupt();
+	
+	if (CheckProcSignal(PROCSIG_TEST_DSA))
+		HandleTestDsaInterrupt();
 
 	if (CheckProcSignal(PROCSIG_PARALLEL_APPLY_MESSAGE))
 		HandleParallelApplyMessageInterrupt();

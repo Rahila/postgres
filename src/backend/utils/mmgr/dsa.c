@@ -50,6 +50,7 @@
 
 #include "postgres.h"
 
+#include "miscadmin.h"
 #include "port/atomics.h"
 #include "port/pg_bitutils.h"
 #include "storage/dsm.h"
@@ -372,6 +373,7 @@ struct dsa_area
 	size_t		freed_segment_counter;
 };
 
+static dsa_area   *a = NULL;
 #define DSA_SPAN_NOTHING_FREE	((uint16) -1)
 #define DSA_SUPERBLOCK_SIZE (DSA_PAGES_PER_SUPERBLOCK * FPM_PAGE_SIZE)
 
@@ -407,6 +409,7 @@ static dsa_area *attach_internal(void *place, dsm_segment *segment,
 static void check_for_freed_segments(dsa_area *area);
 static void check_for_freed_segments_locked(dsa_area *area);
 static void rebin_segment(dsa_area *area, dsa_segment_map *segment_map);
+static void test_dsa_basic(void);
 
 /*
  * Create a new shared area in a new DSM segment.  Further DSM segments will
@@ -2339,4 +2342,58 @@ rebin_segment(dsa_area *area, dsa_segment_map *segment_map)
 		Assert(next->header->bin == new_bin);
 		next->header->prev = segment_index;
 	}
+}
+void 
+ProcessTestDsaInterrupt(void)
+{
+	test_dsa_basic();
+}
+
+static void 
+test_dsa_basic(void)
+{
+	int			tranche_id;
+	dsa_pointer p[100];
+	MemoryContext oldcontext;
+
+	/* XXX: this tranche is leaked */
+	tranche_id = LWLockNewTrancheId();
+	LWLockRegisterTranche(tranche_id, "test_dsa");
+	if (a == NULL)
+	{
+		oldcontext = CurrentMemoryContext;
+		MemoryContextSwitchTo(TopMemoryContext);
+		a = dsa_create_ext(tranche_id, DSA_DEFAULT_INIT_SEGMENT_SIZE, 16 * DSA_DEFAULT_INIT_SEGMENT_SIZE);
+		dsa_pin_mapping(a);
+		MemoryContextSwitchTo(oldcontext);
+	}
+	for (int i = 0; i < 100; i++)
+	{
+		p[i] = dsa_allocate0(a, 100000);
+		snprintf(dsa_get_address(a, p[i]), 100000, "foobar%d", i);
+	}
+	elog(LOG, " dsa Allocate succeeded ");
+	for (int i = 0; i < 100; i++)
+	{
+		char		buf[100];
+
+		snprintf(buf, 100, "foobar%d", i);
+/*		if (strcmp(dsa_get_address(a, p[i]), buf) != 0)
+			elog(ERROR, "no match");*/
+	}
+
+	for (int i = 0; i < 100; i++)
+	{
+		dsa_free(a, p[i]);
+	}
+
+//	dsa_detach(a);
+
+}
+void
+HandleTestDsaInterrupt(void)
+{
+	InterruptPending = true;
+	TestDsaPending = true;
+	/* latch will be set by procsignal_sigusr1_handler */
 }

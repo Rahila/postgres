@@ -3499,6 +3499,9 @@ ProcessInterrupts(void)
 
 	if (PublishMemoryContextPending)
 		ProcessGetMemoryContextInterrupt();
+	
+	if (TestDsaPending)
+		ProcessTestDsaInterrupt();
 
 	if (ParallelApplyMessagePending)
 		HandleParallelApplyMessages();
