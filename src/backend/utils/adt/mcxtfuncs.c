@@ -35,7 +35,8 @@
  * ----------
  */
 
-struct MemoryContextState *memCtxState = NULL;
+struct MemoryContextBackendState *memCtxState = NULL;
+struct MemoryContextState *memCtxArea = NULL;
 
 /*
  * int_list_to_array
@@ -475,7 +476,10 @@ pg_get_process_memory_contexts(PG_FUNCTION_ARGS)
 			 */
 			if (DsaPointerIsValid(memCtxState[procNumber].memstats_dsa_pointer)
 				&& msecs > 0)
+			{
+				LWLockRelease(&memCtxState[procNumber].lw_lock);
 				break;
+			}
 
 		}
 		LWLockRelease(&memCtxState[procNumber].lw_lock);
@@ -510,9 +514,14 @@ pg_get_process_memory_contexts(PG_FUNCTION_ARGS)
 		}
 
 	}
-
-	area = dsa_attach(memCtxState[procNumber].memstats_dsa_handle);
+	/* XXX. Check if this lock is required */
+	LWLockAcquire(&memCtxArea->lw_lock, LW_EXCLUSIVE);
+	/* Assert for dsa_handle to be valid */
+	area = dsa_attach(memCtxArea->memstats_dsa_handle);
 	/* We should land here only with a valid memstats_dsa_pointer */
+
+	LWLockRelease(&memCtxArea->lw_lock);
+	LWLockAcquire(&memCtxState[procNumber].lw_lock, LW_EXCLUSIVE);
 	Assert(DsaPointerIsValid(memCtxState[procNumber].memstats_dsa_pointer));
 	memctx_info = (MemoryContextEntry *) dsa_get_address(area,
 														 memCtxState[procNumber].memstats_dsa_pointer);
@@ -528,26 +537,36 @@ pg_get_process_memory_contexts(PG_FUNCTION_ARGS)
 		int			path_length;
 		Datum		values[PG_GET_BACKEND_MEMORY_CONTEXTS_COLS];
 		bool		nulls[PG_GET_BACKEND_MEMORY_CONTEXTS_COLS];
+		char *name;
+		char *ident;
+		Datum *path_datum_array;
 
 		memset(values, 0, sizeof(values));
 		memset(nulls, 0, sizeof(nulls));
 
-		if (strlen(memctx_info[i].name) != 0)
-			values[0] = CStringGetTextDatum(memctx_info[i].name);
+		if (DsaPointerIsValid(memctx_info[i].name))
+		{
+			name = (char *)dsa_get_address(area, memctx_info[i].name);
+			values[0] = CStringGetTextDatum(name);
+		}
 		else
 			nulls[0] = true;
-		if (strlen(memctx_info[i].ident) != 0)
-			values[1] = CStringGetTextDatum(memctx_info[i].ident);
+		if (DsaPointerIsValid(memctx_info[i].ident))
+		{
+			ident = (char *)dsa_get_address(area, memctx_info[i].ident);
+			values[1] = CStringGetTextDatum(ident);
+		}
 		else
 			nulls[1] = true;
 
 		values[2] = CStringGetTextDatum(memctx_info[i].type);
 
 		path_length = memctx_info[i].path_length;
-		path_array = construct_array_builtin(memctx_info[i].path,
+		
+		path_datum_array = (Datum *)dsa_get_address(area, memctx_info[i].path);
+		path_array = construct_array_builtin(path_datum_array,
 											 path_length, INT4OID);
 		values[3] = PointerGetDatum(path_array);
-
 		values[4] = Int64GetDatum(memctx_info[i].totalspace);
 		values[5] = Int64GetDatum(memctx_info[i].nblocks);
 		values[6] = Int64GetDatum(memctx_info[i].freespace);
@@ -566,8 +585,11 @@ pg_get_process_memory_contexts(PG_FUNCTION_ARGS)
 	{
 		Datum		values[PG_GET_BACKEND_MEMORY_CONTEXTS_COLS];
 		bool		nulls[PG_GET_BACKEND_MEMORY_CONTEXTS_COLS];
+		char *name;
 
-		values[0] = CStringGetTextDatum(memctx_info[i].name);
+		name = (char *)dsa_get_address(area, memctx_info[i].name);
+		values[0] = CStringGetTextDatum(name);
+		nulls[0] = true;
 		nulls[1] = true;
 		nulls[2] = true;
 		nulls[3] = true;
@@ -584,9 +606,9 @@ pg_get_process_memory_contexts(PG_FUNCTION_ARGS)
 	LWLockRelease(&memCtxState[procNumber].lw_lock);
 
 	ConditionVariableCancelSleep();
+	dsa_detach(area);
 
 end:
-	dsa_detach(area);
 	PG_RETURN_NULL();
 }
 
@@ -599,22 +621,22 @@ MemCtxShmemSize(void)
 	Size		TotalProcs =
 		add_size(MaxBackends, add_size(NUM_AUXILIARY_PROCS, max_prepared_xacts));
 
-	return mul_size(TotalProcs, sizeof(MemoryContextState));
+	return mul_size(TotalProcs, sizeof(MemoryContextBackendState));
 }
 
 /*
  * Init shared memory for reporting memory context information.
  */
 void
-MemCtxShmemInit(void)
+MemCtxBackendShmemInit(void)
 {
 	bool		found;
 	Size		TotalProcs =
 		add_size(MaxBackends, add_size(NUM_AUXILIARY_PROCS, max_prepared_xacts));
 
-	memCtxState = (MemoryContextState *) ShmemInitStruct("MemoryContextState",
-														 MemCtxShmemSize(),
-														 &found);
+	memCtxState = (MemoryContextBackendState *) ShmemInitStruct("MemoryContextBackendState",
+											MemCtxShmemSize(),
+												&found);
 	if (!IsUnderPostmaster)
 	{
 		Assert(!found);
@@ -626,12 +648,37 @@ MemCtxShmemInit(void)
 			LWLockInitialize(&memCtxState[i].lw_lock,
 							 LWLockNewTrancheId());
 			LWLockRegisterTranche(memCtxState[i].lw_lock.tranche,
-								  "mem_context_stats_reporting");
+								  "mem_context_backend_stats_reporting");
 
-			memCtxState[i].memstats_dsa_handle = DSA_HANDLE_INVALID;
 			memCtxState[i].memstats_dsa_pointer = InvalidDsaPointer;
 			memCtxState[i].request_pending = false;
 		}
+	}
+	else
+	{
+		Assert(found);
+	}
+}
+	
+/*
+ * Initialize shared memory for displaying memory
+ * context statistics
+ */ 
+void
+MemCtxShmemInit(void)
+{
+	bool found;
+	memCtxArea = (MemoryContextState *) ShmemInitStruct("MemoryContextState", sizeof(MemoryContextState),
+											&found);
+	if (!IsUnderPostmaster)
+	{
+		Assert(!found);
+
+		LWLockInitialize(&memCtxArea->lw_lock,
+						LWLockNewTrancheId());
+		LWLockRegisterTranche(memCtxArea->lw_lock.tranche,
+						"mem_context_stats_reporting");
+		memCtxArea->memstats_dsa_handle = DSA_HANDLE_INVALID;
 	}
 	else
 	{

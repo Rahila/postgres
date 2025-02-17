@@ -342,6 +342,7 @@ CreateOrAttachShmemStructs(void)
 	WaitEventCustomShmemInit();
 	InjectionPointShmemInit();
 	MemCtxShmemInit();
+	MemCtxBackendShmemInit();
 }
 
 /*

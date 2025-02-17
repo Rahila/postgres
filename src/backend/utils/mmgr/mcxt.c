@@ -188,7 +188,7 @@ static void PublishMemoryContext(MemoryContextEntry *memctx_infos,
 								 int curr_id, MemoryContext context,
 								 List *path,
 								 MemoryContextCounters stat,
-								 int num_contexts);
+								 int num_contexts, dsa_area * area);
 static void compute_num_of_contexts(List *contexts, HTAB *context_id_lookup,
 									int *stats_count,
 									bool get_summary);
@@ -1421,10 +1421,8 @@ ProcessGetMemoryContextInterrupt(void)
 	int			max_stats;
 	int			idx = MyProcNumber;
 	int			stats_count = 0;
-	int	seg_size = 0;
 	MemoryContextCounters stat;
 
-	check_stack_depth();
 	PublishMemoryContextPending = false;
 	
 	LWLockAcquire(&memCtxState[idx].lw_lock, LW_EXCLUSIVE);
@@ -1479,29 +1477,27 @@ ProcessGetMemoryContextInterrupt(void)
 	 */
 	stats_count = (stats_count > max_stats) ? max_stats : stats_count;
 
-	seg_size = (stats_count * sizeof(MemoryContextEntry)) > DSA_MIN_SEGMENT_SIZE ?
-				stats_count * sizeof(MemoryContextEntry) : DSA_MIN_SEGMENT_SIZE;
 	/* Attach to DSA segment */
-	LWLockAcquire(&memCtxState[idx].lw_lock, LW_EXCLUSIVE);
+	LWLockAcquire(&memCtxArea->lw_lock, LW_EXCLUSIVE);
 	/*
 	 * Create a DSA segment with maximum size of 16MB, send handle to the
 	 * publishing process for storing the stats. If number of contexts exceed
 	 * 16MB, a cumulative total is stored for such contexts.
 	 */
-	if (memCtxState[idx].memstats_dsa_handle == DSA_HANDLE_INVALID)
+	if (memCtxArea->memstats_dsa_handle == DSA_HANDLE_INVALID)
 	{
 		MemoryContext oldcontext = CurrentMemoryContext;
 		dsa_handle handle;
 		
 		MemoryContextSwitchTo(TopMemoryContext);
 
-		area = dsa_create_ext(memCtxState[idx].lw_lock.tranche,
-							  MAX_NUM_DEFAULT_SEGMENTS * DSA_DEFAULT_INIT_SEGMENT_SIZE,
-							  MAX_NUM_DEFAULT_SEGMENTS * DSA_DEFAULT_INIT_SEGMENT_SIZE);
+		area = dsa_create_ext(memCtxArea->lw_lock.tranche,
+							  DSA_DEFAULT_INIT_SEGMENT_SIZE,
+							  DSA_DEFAULT_INIT_SEGMENT_SIZE);
 		
 		handle = dsa_get_handle(area);
 		MemoryContextSwitchTo(oldcontext);
-		
+
 		dsa_pin_mapping(area);
 
 		/*
@@ -1510,22 +1506,25 @@ ProcessGetMemoryContextInterrupt(void)
 		 */
 		dsa_pin(area);
 		/* Set the handle in shared memory */
-		memCtxState[idx].memstats_dsa_handle = handle;
+		memCtxArea->memstats_dsa_handle = handle;
 	}
 /*	else
 	{
 		area = dsa_attach(memCtxState[procNumber].memstats_dsa_handle);
 	}*/
-/*
-	if (area == NULL)
+
+	else if (area == NULL)
 	{
 		MemoryContext oldcontext = CurrentMemoryContext;
 
 		MemoryContextSwitchTo(TopMemoryContext);
-		area = dsa_attach(memCtxState[idx].memstats_dsa_handle);
-		dsa_pin_mapping(area);
+		area = dsa_attach(memCtxArea->memstats_dsa_handle);
 		MemoryContextSwitchTo(oldcontext);
-	}*/
+		dsa_pin_mapping(area);
+	}
+	LWLockRelease(&memCtxArea->lw_lock);
+
+	LWLockAcquire(&memCtxState[idx].lw_lock, LW_EXCLUSIVE);
 	memCtxState[idx].proc_id = MyProcPid;
 
 	/* Free the memory allocated previously by the same process. 
@@ -1538,8 +1537,18 @@ ProcessGetMemoryContextInterrupt(void)
 	{
 	/*memCtxState[idx].memstats_dsa_pointer = dsa_allocate0(area,
 														  stats_count * sizeof(MemoryContextEntry));*/
-		memCtxState[idx].memstats_dsa_pointer = dsa_allocate0(area,
-							 MAX_NUM_DEFAULT_SEGMENTS * DSA_DEFAULT_INIT_SEGMENT_SIZE);
+		memCtxState[idx].memstats_dsa_pointer = dsa_allocate0(area, stats_count * sizeof(MemoryContextEntry));
+	}
+	else
+	{
+		/* Free any previous allocations */
+		if (DsaPointerIsValid(memCtxState[idx].memstats_prev_dsa_pointer))
+		{
+			/* XXX add logic to free the name and ident arrays */
+			dsa_free(area, memCtxState[idx].memstats_prev_dsa_pointer);
+		}	
+		memCtxState[idx].memstats_prev_dsa_pointer = memCtxState[idx].memstats_dsa_pointer;
+		memCtxState[idx].memstats_dsa_pointer = dsa_allocate0(area, stats_count * sizeof(MemoryContextEntry));
 	}
 	meminfo = (MemoryContextEntry *) dsa_get_address(area,
 													 memCtxState[idx].memstats_dsa_pointer);
@@ -1554,7 +1563,7 @@ ProcessGetMemoryContextInterrupt(void)
 		(*TopMemoryContext->methods->stats) (TopMemoryContext, NULL, NULL,
 											 &stat, true);
 		path = lcons_int(1, path);
-		PublishMemoryContext(meminfo, ctx_id, TopMemoryContext, path, stat, 1);
+		PublishMemoryContext(meminfo, ctx_id, TopMemoryContext, path, stat, 1, area);
 		ctx_id = ctx_id + 1;
 
 		/*
@@ -1577,7 +1586,7 @@ ProcessGetMemoryContextInterrupt(void)
 			path = compute_context_path(c, context_id_lookup);
 
 			PublishMemoryContext(meminfo, ctx_id, c, path,
-								 grand_totals, num_contexts);
+								 grand_totals, num_contexts, area);
 			ctx_id = ctx_id + 1;
 		}
 		/* For summary mode, total_stats and in_memory_stats remain the same */
@@ -1588,6 +1597,7 @@ ProcessGetMemoryContextInterrupt(void)
 	foreach_ptr(MemoryContextData, cur, contexts)
 	{
 		List	   *path = NIL;
+		char *name;
 
 		/*
 		 * Figure out the transient context_id of this context and each of its
@@ -1601,7 +1611,7 @@ ProcessGetMemoryContextInterrupt(void)
 			memset(&stat, 0, sizeof(stat));
 			(*cur->methods->stats) (cur, NULL, NULL, &stat, true);
 			/* Copy statistics to DSA memory */
-			PublishMemoryContext(meminfo, context_id, cur, path, stat, 1);
+			PublishMemoryContext(meminfo, context_id, cur, path, stat, 1, area);
 		}
 		else
 		{
@@ -1622,7 +1632,9 @@ ProcessGetMemoryContextInterrupt(void)
 		if (context_id == (max_stats - 2) && context_id < (stats_count - 1))
 		{
 			memCtxState[idx].num_individual_stats = context_id + 1;
-			strncpy(meminfo[max_stats - 1].name, "Remaining Totals", 16);
+			meminfo[max_stats - 1].name = dsa_allocate0(area, 16);
+			name = dsa_get_address(area, meminfo[max_stats - 1].name);
+			strncpy(name, "Remaining Totals", 16);
 		}
 		context_id++;
 	}
@@ -1725,17 +1737,23 @@ compute_num_of_contexts(List *contexts, HTAB *context_id_lookup,
 static void
 PublishMemoryContext(MemoryContextEntry *memctx_info, int curr_id,
 					 MemoryContext context, List *path,
-					 MemoryContextCounters stat, int num_contexts)
+					 MemoryContextCounters stat, int num_contexts,
+						dsa_area *area)
 {
 	char		clipped_ident[MEMORY_CONTEXT_IDENT_DISPLAY_SIZE];
+	char *name;
+	char *ident;
+	Datum *path_array;
 
 	if (context->name != NULL)
 	{
 		Assert(strlen(context->name) < MEMORY_CONTEXT_IDENT_DISPLAY_SIZE);
-		strncpy(memctx_info[curr_id].name, context->name, strlen(context->name));
+		memctx_info[curr_id].name = dsa_allocate0(area, strlen(context->name) + 1);
+		name = (char *)dsa_get_address(area, memctx_info[curr_id].name);
+		strncpy(name, context->name, strlen(context->name));
 	}
 	else
-		memctx_info[curr_id].name[0] = '\0';
+		memctx_info[curr_id].name = InvalidDsaPointer;
 
 	/* Trim and copy the identifier if it is not set to NULL */
 	if (context->ident != NULL)
@@ -1759,20 +1777,29 @@ PublishMemoryContext(MemoryContextEntry *memctx_info, int curr_id,
 		 */
 		if (!strncmp(context->name, "dynahash", 8))
 		{
-			strncpy(memctx_info[curr_id].name,
+			strncpy(name,
 					clipped_ident, strlen(clipped_ident));
-			memctx_info[curr_id].ident[0] = '\0';
+			memctx_info[curr_id].ident = InvalidDsaPointer;
 		}
 		else
-			strncpy(memctx_info[curr_id].ident,
+		{
+			
+			memctx_info[curr_id].ident = dsa_allocate0(area, strlen(clipped_ident) + 1);
+			ident = (char *)dsa_get_address(area, memctx_info[curr_id].ident);
+			strncpy(ident,
 					clipped_ident, strlen(clipped_ident));
+		}
 	}
 	else
-		memctx_info[curr_id].ident[0] = '\0';
+		memctx_info[curr_id].ident = InvalidDsaPointer;
 
 	memctx_info[curr_id].path_length = list_length(path);
+	
+	memctx_info[curr_id].path = dsa_allocate0(area, memctx_info[curr_id].path_length
+								* sizeof(Datum));
+	path_array = (Datum *) dsa_get_address(area, memctx_info[curr_id].path);
 	foreach_int(i, path)
-		memctx_info[curr_id].path[foreach_current_index(i)] = Int32GetDatum(i);
+		path_array[foreach_current_index(i)] = Int32GetDatum(i);
 
 	memctx_info[curr_id].type = AssignContextType(context->type);
 	memctx_info[curr_id].totalspace = stat.totalspace;

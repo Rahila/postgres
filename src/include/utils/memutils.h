@@ -330,13 +330,9 @@ pg_memory_is_all_zeros(const void *ptr, size_t len)
 /* Dynamic shared memory state for memory context statistics reporting */
 typedef struct MemoryContextEntry
 {
-	/*
-	 * XXX isn't 2 x 1kB for every context a bit too much? Maybe better to
-	 * make it variable-length?
-	 */
-	char		name[MEMORY_CONTEXT_IDENT_DISPLAY_SIZE];
-	char		ident[MEMORY_CONTEXT_IDENT_DISPLAY_SIZE];
-	Datum		path[MEM_CONTEXT_MAX_LEVEL];
+	dsa_pointer 	name;
+	dsa_pointer 	ident;
+	dsa_pointer 	path;
 	const char *type;
 	int			path_length;
 	int64		totalspace;
@@ -347,7 +343,7 @@ typedef struct MemoryContextEntry
 } MemoryContextEntry;
 
 /* Shared memory state for memory context statistics reporting */
-typedef struct MemoryContextState
+typedef struct MemoryContextBackendState
 {
 	ConditionVariable memctx_cv;
 	LWLock		lw_lock;
@@ -355,10 +351,16 @@ typedef struct MemoryContextState
 	int			num_individual_stats;
 	int			total_stats;
 	bool		get_summary;
-	dsa_handle	memstats_dsa_handle;
 	dsa_pointer memstats_dsa_pointer;
+	dsa_pointer memstats_prev_dsa_pointer;
 	TimestampTz stats_timestamp;
 	bool		request_pending;
+} MemoryContextBackendState;
+
+typedef struct MemoryContextState
+{
+	dsa_handle	memstats_dsa_handle;
+	LWLock		lw_lock;
 } MemoryContextState;
 
 /*
@@ -372,10 +374,12 @@ typedef struct MemoryContextId
 	int			context_id;
 }			MemoryContextId;
 
-extern PGDLLIMPORT MemoryContextState *memCtxState;
+extern PGDLLIMPORT MemoryContextBackendState *memCtxState;
+extern PGDLLIMPORT MemoryContextState *memCtxArea;
 extern void ProcessGetMemoryContextInterrupt(void);
 extern const char *AssignContextType(NodeTag type);
 extern void HandleGetMemoryContextInterrupt(void);
 extern void MemCtxShmemInit(void);
+extern void MemCtxBackendShmemInit(void);
 
 #endif							/* MEMUTILS_H */
