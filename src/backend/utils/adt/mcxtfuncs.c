@@ -651,6 +651,7 @@ MemCtxBackendShmemInit(void)
 								  "mem_context_backend_stats_reporting");
 
 			memCtxState[i].memstats_dsa_pointer = InvalidDsaPointer;
+			memCtxState[i].memstats_prev_dsa_pointer = InvalidDsaPointer;
 			memCtxState[i].request_pending = false;
 		}
 	}

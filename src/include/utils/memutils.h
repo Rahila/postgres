@@ -350,6 +350,7 @@ typedef struct MemoryContextBackendState
 	int			proc_id;
 	int			num_individual_stats;
 	int			total_stats;
+	int			prev_total_stats;
 	bool		get_summary;
 	dsa_pointer memstats_dsa_pointer;
 	dsa_pointer memstats_prev_dsa_pointer;

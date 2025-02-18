@@ -193,6 +193,7 @@ static void compute_num_of_contexts(List *contexts, HTAB *context_id_lookup,
 									int *stats_count,
 									bool get_summary);
 static List *compute_context_path(MemoryContext c, HTAB *context_id_lookup);
+static void dsa_free_previous_stats(dsa_area *area, int total_stats, dsa_pointer prev_dsa_pointer);
 
 
 /*
@@ -1491,9 +1492,7 @@ ProcessGetMemoryContextInterrupt(void)
 		
 		MemoryContextSwitchTo(TopMemoryContext);
 
-		area = dsa_create_ext(memCtxArea->lw_lock.tranche,
-							  DSA_DEFAULT_INIT_SEGMENT_SIZE,
-							  DSA_DEFAULT_INIT_SEGMENT_SIZE);
+		area = dsa_create(memCtxArea->lw_lock.tranche);
 		
 		handle = dsa_get_handle(area);
 		MemoryContextSwitchTo(oldcontext);
@@ -1508,11 +1507,6 @@ ProcessGetMemoryContextInterrupt(void)
 		/* Set the handle in shared memory */
 		memCtxArea->memstats_dsa_handle = handle;
 	}
-/*	else
-	{
-		area = dsa_attach(memCtxState[procNumber].memstats_dsa_handle);
-	}*/
-
 	else if (area == NULL)
 	{
 		MemoryContext oldcontext = CurrentMemoryContext;
@@ -1527,16 +1521,8 @@ ProcessGetMemoryContextInterrupt(void)
 	LWLockAcquire(&memCtxState[idx].lw_lock, LW_EXCLUSIVE);
 	memCtxState[idx].proc_id = MyProcPid;
 
-	/* Free the memory allocated previously by the same process. 
-	if (DsaPointerIsValid(memCtxState[idx].memstats_dsa_pointer))
-	{
-		dsa_free(area, memCtxState[idx].memstats_dsa_pointer);
-		memCtxState[idx].memstats_dsa_pointer = InvalidDsaPointer;
-	}*/
 	if (!DsaPointerIsValid(memCtxState[idx].memstats_dsa_pointer))
 	{
-	/*memCtxState[idx].memstats_dsa_pointer = dsa_allocate0(area,
-														  stats_count * sizeof(MemoryContextEntry));*/
 		memCtxState[idx].memstats_dsa_pointer = dsa_allocate0(area, stats_count * sizeof(MemoryContextEntry));
 	}
 	else
@@ -1544,10 +1530,17 @@ ProcessGetMemoryContextInterrupt(void)
 		/* Free any previous allocations */
 		if (DsaPointerIsValid(memCtxState[idx].memstats_prev_dsa_pointer))
 		{
-			/* XXX add logic to free the name and ident arrays */
+			/*
+			 * Free the name, ident and path pointers before freeing the
+			 * memory that contains them.
+			 */
+			dsa_free_previous_stats(area, memCtxState[idx].prev_total_stats,
+							memCtxState[idx].memstats_prev_dsa_pointer);
 			dsa_free(area, memCtxState[idx].memstats_prev_dsa_pointer);
+			memCtxState[idx].memstats_prev_dsa_pointer = InvalidDsaPointer;
 		}	
 		memCtxState[idx].memstats_prev_dsa_pointer = memCtxState[idx].memstats_dsa_pointer;
+		memCtxState[idx].prev_total_stats = memCtxState[idx].total_stats;
 		memCtxState[idx].memstats_dsa_pointer = dsa_allocate0(area, stats_count * sizeof(MemoryContextEntry));
 	}
 	meminfo = (MemoryContextEntry *) dsa_get_address(area,
@@ -1571,6 +1564,7 @@ ProcessGetMemoryContextInterrupt(void)
 		 * capped at 100). This includes statistics of all of their children
 		 * upto level 100.
 		 */
+
 		for (MemoryContext c = TopMemoryContext->firstchild; c != NULL;
 			 c = c->nextchild)
 		{
@@ -1632,9 +1626,10 @@ ProcessGetMemoryContextInterrupt(void)
 		if (context_id == (max_stats - 2) && context_id < (stats_count - 1))
 		{
 			memCtxState[idx].num_individual_stats = context_id + 1;
-			meminfo[max_stats - 1].name = dsa_allocate0(area, 16);
+			meminfo[max_stats - 1].name = dsa_allocate0(area, 17);
 			name = dsa_get_address(area, meminfo[max_stats - 1].name);
 			strncpy(name, "Remaining Totals", 16);
+			meminfo[max_stats - 1].ident = InvalidDsaPointer;
 		}
 		context_id++;
 	}
@@ -1691,7 +1686,10 @@ compute_context_path(MemoryContext c, HTAB *context_id_lookup)
 	return path;
 }
 
-/* Return the number of contexts allocated currently by the backend */
+/*
+ * Return the number of contexts allocated currently by the backend
+ * Assign context ids to each of the contexts.
+ */
 static void
 compute_num_of_contexts(List *contexts, HTAB *context_id_lookup,
 						int *stats_count, bool get_summary)
@@ -1702,7 +1700,7 @@ compute_num_of_contexts(List *contexts, HTAB *context_id_lookup,
 		bool		found;
 
 		entry = (MemoryContextId *) hash_search(context_id_lookup, &cur,
-												HASH_ENTER, &found);
+									HASH_ENTER, &found);
 		Assert(!found);
 
 		/* context id starts with 1 */
@@ -1714,7 +1712,7 @@ compute_num_of_contexts(List *contexts, HTAB *context_id_lookup,
 			if (get_summary)
 			{
 				entry = (MemoryContextId *) hash_search(context_id_lookup, &c,
-														HASH_ENTER, &found);
+									HASH_ENTER, &found);
 				Assert(!found);
 
 				entry->context_id = (++(*stats_count));
@@ -1766,7 +1764,7 @@ PublishMemoryContext(MemoryContextEntry *memctx_info, int curr_id,
 		 */
 		if (idlen >= MEMORY_CONTEXT_IDENT_DISPLAY_SIZE)
 			idlen = pg_mbcliplen(context->ident, idlen,
-								 MEMORY_CONTEXT_IDENT_DISPLAY_SIZE - 1);
+							MEMORY_CONTEXT_IDENT_DISPLAY_SIZE - 1);
 
 		memcpy(clipped_ident, context->ident, idlen);
 		clipped_ident[idlen] = '\0';
@@ -1777,6 +1775,11 @@ PublishMemoryContext(MemoryContextEntry *memctx_info, int curr_id,
 		 */
 		if (!strncmp(context->name, "dynahash", 8))
 		{
+			dsa_free(area, memctx_info[curr_id].name);
+			memctx_info[curr_id].name = dsa_allocate0(area,
+						strlen(clipped_ident) + 1);
+			name = (char *)dsa_get_address(area,
+						memctx_info[curr_id].name);
 			strncpy(name,
 					clipped_ident, strlen(clipped_ident));
 			memctx_info[curr_id].ident = InvalidDsaPointer;
@@ -1784,19 +1787,21 @@ PublishMemoryContext(MemoryContextEntry *memctx_info, int curr_id,
 		else
 		{
 			
-			memctx_info[curr_id].ident = dsa_allocate0(area, strlen(clipped_ident) + 1);
-			ident = (char *)dsa_get_address(area, memctx_info[curr_id].ident);
+			memctx_info[curr_id].ident = dsa_allocate0(area,
+						strlen(clipped_ident) + 1);
+			ident = (char *)dsa_get_address(area,
+						memctx_info[curr_id].ident);
 			strncpy(ident,
 					clipped_ident, strlen(clipped_ident));
 		}
 	}
 	else
 		memctx_info[curr_id].ident = InvalidDsaPointer;
-
+	/* Allocate dsa memory for storing path information */
 	memctx_info[curr_id].path_length = list_length(path);
-	
-	memctx_info[curr_id].path = dsa_allocate0(area, memctx_info[curr_id].path_length
-								* sizeof(Datum));
+	memctx_info[curr_id].path = dsa_allocate0(area, 
+					memctx_info[curr_id].path_length
+							* sizeof(Datum));
 	path_array = (Datum *) dsa_get_address(area, memctx_info[curr_id].path);
 	foreach_int(i, path)
 		path_array[foreach_current_index(i)] = Int32GetDatum(i);
@@ -1809,6 +1814,25 @@ PublishMemoryContext(MemoryContextEntry *memctx_info, int curr_id,
 	memctx_info[curr_id].num_agg_stats = num_contexts;
 }
 
+static void
+dsa_free_previous_stats(dsa_area *area, int total_stats,
+				dsa_pointer prev_dsa_pointer)
+{
+	MemoryContextEntry *meminfo;
+
+	meminfo = (MemoryContextEntry *) dsa_get_address(area, prev_dsa_pointer);
+	for (int i = 0; i < total_stats; i++)
+	{
+		if (DsaPointerIsValid(meminfo[i].name))
+			dsa_free(area, meminfo[i].name);
+		
+		if (DsaPointerIsValid(meminfo[i].ident))
+			dsa_free(area, meminfo[i].ident);
+		
+		if (DsaPointerIsValid(meminfo[i].path))
+			dsa_free(area, meminfo[i].path);
+	}
+}
 void *
 palloc(Size size)
 {
