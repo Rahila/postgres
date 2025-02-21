@@ -15,6 +15,8 @@
 #ifndef DYNAHASH_H
 #define DYNAHASH_H
 
+#define DEF_SEGSIZE			   256
 extern int	my_log2(long num);
+extern int	next_pow2_int(long num);
 
 #endif							/* DYNAHASH_H */
