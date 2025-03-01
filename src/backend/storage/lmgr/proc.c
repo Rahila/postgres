@@ -218,11 +218,11 @@ InitProcGlobal(void)
 	 * how hotly they are accessed.
 	 */
 	ProcGlobal->xids =
-		(TransactionId *) ShmemAlloc(TotalProcs * sizeof(*ProcGlobal->xids));
+		(TransactionId *) ShmemInitStruct("Proc Transaction Ids", TotalProcs * sizeof(*ProcGlobal->xids), &found);
 	MemSet(ProcGlobal->xids, 0, TotalProcs * sizeof(*ProcGlobal->xids));
-	ProcGlobal->subxidStates = (XidCacheStatus *) ShmemAlloc(TotalProcs * sizeof(*ProcGlobal->subxidStates));
+	ProcGlobal->subxidStates = (XidCacheStatus *) ShmemInitStruct("Proc Sub-transaction id states", TotalProcs * sizeof(*ProcGlobal->subxidStates), &found);
 	MemSet(ProcGlobal->subxidStates, 0, TotalProcs * sizeof(*ProcGlobal->subxidStates));
-	ProcGlobal->statusFlags = (uint8 *) ShmemAlloc(TotalProcs * sizeof(*ProcGlobal->statusFlags));
+	ProcGlobal->statusFlags = (uint8 *) ShmemInitStruct("Proc Status Flags", TotalProcs * sizeof(*ProcGlobal->statusFlags), &found);
 	MemSet(ProcGlobal->statusFlags, 0, TotalProcs * sizeof(*ProcGlobal->statusFlags));
 
 	/*
@@ -233,7 +233,7 @@ InitProcGlobal(void)
 	fpLockBitsSize = MAXALIGN(FastPathLockGroupsPerBackend * sizeof(uint64));
 	fpRelIdSize = MAXALIGN(FastPathLockGroupsPerBackend * sizeof(Oid) * FP_LOCK_SLOTS_PER_GROUP);
 
-	fpPtr = ShmemAlloc(TotalProcs * (fpLockBitsSize + fpRelIdSize));
+	fpPtr = ShmemInitStruct("Fast path lock arrays", TotalProcs * (fpLockBitsSize + fpRelIdSize), &found);
 	MemSet(fpPtr, 0, TotalProcs * (fpLockBitsSize + fpRelIdSize));
 
 	/* For asserts checking we did not overflow. */

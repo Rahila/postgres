@@ -464,6 +464,7 @@ CreateLWLocks(void)
 		Size		spaceLocks = LWLockShmemSize();
 		int		   *LWLockCounter;
 		char	   *ptr;
+		bool found;
 
 		/* Allocate space */
 		ptr = (char *) ShmemAlloc(spaceLocks);
