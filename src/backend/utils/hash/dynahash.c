@@ -278,7 +278,7 @@ static long next_pow2_long(long num);
 static void register_seq_scan(HTAB *hashp);
 static void deregister_seq_scan(HTAB *hashp);
 static bool has_seq_scans(HTAB *hashp);
-static int find_num_of_segs(long nelem, int *nbuckets, long num_partitions, long ssize);
+static int	find_num_of_segs(long nelem, int *nbuckets, long num_partitions, long ssize);
 
 /*
  * memory allocation support
@@ -585,8 +585,8 @@ hash_create(const char *tabname, long nelem, const HASHCTL *info, int flags)
 					freelist_partitions,
 					nelem_alloc,
 					nelem_alloc_first;
-		void *curr_offset;
-	
+		void	   *curr_offset;
+
 		/*
 		 * If hash table is partitioned, give each freelist an equal share of
 		 * the initial allocation.  Otherwise only freeList[0] is used.
@@ -597,17 +597,18 @@ hash_create(const char *tabname, long nelem, const HASHCTL *info, int flags)
 			freelist_partitions = 1;
 
 		/*
-		 * If table is shared, calculate the offset at which to find the
-		 * the first partition of elements
+		 * If table is shared, calculate the offset at which to find the the
+		 * first partition of elements
 		 */
 		if (hashp->isshared)
 		{
 			int			nsegs;
 			int			nbuckets;
+
 			nsegs = find_num_of_segs(nelem, &nbuckets, hctl->num_partitions, hctl->ssize);
-			
-			curr_offset =  (((char *) hashp->hctl) + sizeof(HASHHDR) + (info->dsize * sizeof(HASHSEGMENT)) +
-                        + (sizeof(HASHBUCKET) * hctl->ssize * nsegs));
+
+			curr_offset = (((char *) hashp->hctl) + sizeof(HASHHDR) + (info->dsize * sizeof(HASHSEGMENT)) +
+						   +(sizeof(HASHBUCKET) * hctl->ssize * nsegs));
 		}
 
 		nelem_alloc = nelem / freelist_partitions;
@@ -628,19 +629,22 @@ hash_create(const char *tabname, long nelem, const HASHCTL *info, int flags)
 		{
 			int			temp = (i == 0) ? nelem_alloc_first : nelem_alloc;
 			HASHELEMENT *firstElement;
- 			Size elementSize = MAXALIGN(sizeof(HASHELEMENT)) + MAXALIGN(hctl->entrysize);
+			Size		elementSize = MAXALIGN(sizeof(HASHELEMENT)) + MAXALIGN(hctl->entrysize);
 
-			/* Memory is allocated as part of initial allocation in ShmemInitHash */
+			/*
+			 * Memory is allocated as part of initial allocation in
+			 * ShmemInitHash
+			 */
 			if (hashp->isshared)
 				firstElement = (HASHELEMENT *) curr_offset;
 			else
-				firstElement = NULL;		
-				
+				firstElement = NULL;
+
 			if (!element_alloc(hashp, temp, i, firstElement))
 				ereport(ERROR,
 						(errcode(ERRCODE_OUT_OF_MEMORY),
 						 errmsg("out of memory")));
-			curr_offset = (((char *)curr_offset) + (temp * elementSize));
+			curr_offset = (((char *) curr_offset) + (temp * elementSize));
 		}
 	}
 
@@ -720,7 +724,7 @@ init_htab(HTAB *hashp, long nelem)
 	int			nbuckets;
 	int			nsegs;
 	int			i;
-	
+
 	/*
 	 * initialize mutexes if it's a partitioned table
 	 */
@@ -761,9 +765,9 @@ init_htab(HTAB *hashp, long nelem)
 	{
 		if (hashp->isshared)
 			*segp = (HASHBUCKET *) (((char *) hashp->hctl)
-				+ sizeof(HASHHDR)
-				+ (hashp->hctl->dsize * sizeof(HASHSEGMENT))
-				+ (i * sizeof(HASHBUCKET) * hashp->ssize)); 
+									+ sizeof(HASHHDR)
+									+ (hashp->hctl->dsize * sizeof(HASHSEGMENT))
+									+ (i * sizeof(HASHBUCKET) * hashp->ssize));
 		else
 			*segp = seg_alloc(hashp);
 		if (*segp == NULL)
@@ -869,11 +873,11 @@ hash_select_dirsize(long num_entries)
 Size
 hash_get_shared_size(HASHCTL *info, int flags, long init_size)
 {
-	int nbuckets;
-	int nsegs;
-	int num_partitions;
-	int ssize;
-	Size elementSize = MAXALIGN(sizeof(HASHELEMENT)) + MAXALIGN(info->entrysize);
+	int			nbuckets;
+	int			nsegs;
+	int			num_partitions;
+	int			ssize;
+	Size		elementSize = MAXALIGN(sizeof(HASHELEMENT)) + MAXALIGN(info->entrysize);
 
 	Assert(flags & HASH_DIRSIZE);
 	Assert(info->dsize == info->max_dsize);
@@ -891,8 +895,8 @@ hash_get_shared_size(HASHCTL *info, int flags, long init_size)
 	nsegs = find_num_of_segs(init_size, &nbuckets, num_partitions, ssize);
 
 	return sizeof(HASHHDR) + info->dsize * sizeof(HASHSEGMENT) +
-			+ sizeof(HASHBUCKET) * ssize * nsegs
-			+ init_size * elementSize;
+		+sizeof(HASHBUCKET) * ssize * nsegs
+		+ init_size * elementSize;
 }
 
 
@@ -1726,7 +1730,7 @@ seg_alloc(HTAB *hashp)
 	HASHSEGMENT segp;
 
 	CurrentDynaHashCxt = hashp->hcxt;
-	
+
 	segp = (HASHSEGMENT) hashp->alloc(sizeof(HASHBUCKET) * hashp->ssize);
 
 	if (!segp)
@@ -1999,7 +2003,8 @@ AtEOSubXact_HashTables(bool isCommit, int nestDepth)
 static int
 find_num_of_segs(long nelem, int *nbuckets, long num_partitions, long ssize)
 {
-	int nsegs;
+	int			nsegs;
+
 	/*
 	 * Allocate space for the next greater power of two number of buckets,
 	 * assuming a desired maximum load factor of 1.

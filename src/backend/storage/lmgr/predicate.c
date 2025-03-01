@@ -1300,7 +1300,7 @@ PredicateLockShmemInit(void)
 	 */
 	max_table_size *= 5;
 	requestSize = mul_size((Size) max_table_size,
-						RWConflictDataSize);
+						   RWConflictDataSize);
 
 	RWConflictPool = ShmemInitStruct("RWConflictPool",
 									 RWConflictPoolHeaderDataSize + requestSize,
@@ -1311,7 +1311,7 @@ PredicateLockShmemInit(void)
 		int			i;
 
 		dlist_init(&RWConflictPool->availableList);
-		RWConflictPool->element = (RWConflict) ((char *)RWConflictPool + RWConflictPoolHeaderDataSize); 
+		RWConflictPool->element = (RWConflict) ((char *) RWConflictPool + RWConflictPoolHeaderDataSize);
 		/* Add all elements to available list, clean. */
 		memset(RWConflictPool->element, 0, requestSize);
 		for (i = 0; i < max_table_size; i++)
