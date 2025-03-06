@@ -265,7 +265,7 @@ static long hash_accesses,
  */
 static void *DynaHashAlloc(Size size);
 static HASHSEGMENT seg_alloc(HTAB *hashp);
-static bool element_alloc(HTAB *hashp, int nelem, int freelist_idx);
+static HASHELEMENT *element_alloc(HTAB *hashp, int nelem);
 static bool dir_realloc(HTAB *hashp);
 static bool expand_table(HTAB *hashp);
 static HASHBUCKET get_hash_entry(HTAB *hashp, int freelist_idx);
@@ -281,6 +281,9 @@ static void register_seq_scan(HTAB *hashp);
 static void deregister_seq_scan(HTAB *hashp);
 static bool has_seq_scans(HTAB *hashp);
 
+static int	compute_buckets_and_segs(long nelem, int *nbuckets,
+									 long num_partitions, long ssize);
+static void element_add(HTAB *hashp, HASHELEMENT *firstElement, int freelist_idx, int nelem);
 
 /*
  * memory allocation support
@@ -518,6 +521,7 @@ hash_create(const char *tabname, long nelem, const HASHCTL *info, int flags)
 
 	hashp->frozen = false;
 
+	/* Initializing the HASHHDR variables with default values */
 	hdefault(hashp);
 
 	hctl = hashp->hctl;
@@ -582,6 +586,7 @@ hash_create(const char *tabname, long nelem, const HASHCTL *info, int flags)
 					freelist_partitions,
 					nelem_alloc,
 					nelem_alloc_first;
+		void	   *curr_offset = NULL;
 
 		/*
 		 * If hash table is partitioned, give each freelist an equal share of
@@ -591,6 +596,21 @@ hash_create(const char *tabname, long nelem, const HASHCTL *info, int flags)
 			freelist_partitions = NUM_FREELISTS;
 		else
 			freelist_partitions = 1;
+
+		/*
+		 * If table is shared, calculate the offset at which to find the the
+		 * first partition of elements
+		 */
+		if (hashp->isshared)
+		{
+			int			nsegs;
+			int			nbuckets;
+
+			nsegs = compute_buckets_and_segs(nelem, &nbuckets, hctl->num_partitions, hctl->ssize);
+
+			curr_offset = (((char *) hashp->hctl) + sizeof(HASHHDR) + (info->dsize * sizeof(HASHSEGMENT)) +
+						   +(sizeof(HASHBUCKET) * hctl->ssize * nsegs));
+		}
 
 		nelem_alloc = nelem / freelist_partitions;
 		if (nelem_alloc <= 0)
@@ -609,11 +629,27 @@ hash_create(const char *tabname, long nelem, const HASHCTL *info, int flags)
 		for (i = 0; i < freelist_partitions; i++)
 		{
 			int			temp = (i == 0) ? nelem_alloc_first : nelem_alloc;
+			HASHELEMENT *firstElement;
+			Size		elementSize = MAXALIGN(sizeof(HASHELEMENT)) + MAXALIGN(hctl->entrysize);
 
-			if (!element_alloc(hashp, temp, i))
-				ereport(ERROR,
-						(errcode(ERRCODE_OUT_OF_MEMORY),
-						 errmsg("out of memory")));
+			/*
+			 * Memory is allocated as part of initial allocation in
+			 * ShmemInitHash
+			 */
+			if (hashp->isshared)
+			{
+				firstElement = (HASHELEMENT *) curr_offset;
+				curr_offset = (((char *) curr_offset) + (temp * elementSize));
+			}
+			else
+			{
+				firstElement = element_alloc(hashp, temp);
+				if (!firstElement)
+					ereport(ERROR,
+							(errcode(ERRCODE_OUT_OF_MEMORY),
+							 errmsg("out of memory")));
+			}
+			element_add(hashp, firstElement, i, temp);
 		}
 	}
 
@@ -701,29 +737,10 @@ init_htab(HTAB *hashp, long nelem)
 		for (i = 0; i < NUM_FREELISTS; i++)
 			SpinLockInit(&(hctl->freeList[i].mutex));
 
-	/*
-	 * Allocate space for the next greater power of two number of buckets,
-	 * assuming a desired maximum load factor of 1.
-	 */
-	nbuckets = next_pow2_int(nelem);
-
-	/*
-	 * In a partitioned table, nbuckets must be at least equal to
-	 * num_partitions; were it less, keys with apparently different partition
-	 * numbers would map to the same bucket, breaking partition independence.
-	 * (Normally nbuckets will be much bigger; this is just a safety check.)
-	 */
-	while (nbuckets < hctl->num_partitions)
-		nbuckets <<= 1;
+	nsegs = compute_buckets_and_segs(nelem, &nbuckets, hctl->num_partitions, hctl->ssize);
 
 	hctl->max_bucket = hctl->low_mask = nbuckets - 1;
 	hctl->high_mask = (nbuckets << 1) - 1;
-
-	/*
-	 * Figure number of directory segments needed, round up to a power of 2
-	 */
-	nsegs = (nbuckets - 1) / hctl->ssize + 1;
-	nsegs = next_pow2_int(nsegs);
 
 	/*
 	 * Make sure directory is big enough. If pre-allocated directory is too
@@ -748,11 +765,22 @@ init_htab(HTAB *hashp, long nelem)
 	}
 
 	/* Allocate initial segments */
+	i = 0;
 	for (segp = hashp->dir; hctl->nsegs < nsegs; hctl->nsegs++, segp++)
 	{
-		*segp = seg_alloc(hashp);
+		if (hashp->isshared)
+		{
+			*segp = (HASHBUCKET *) (((char *) hashp->hctl)
+									+ sizeof(HASHHDR)
+									+ (hashp->hctl->dsize * sizeof(HASHSEGMENT))
+									+ (i * sizeof(HASHBUCKET) * hashp->ssize));
+			MemSet(*segp, 0, sizeof(HASHBUCKET) * hashp->ssize);
+		}
+		else
+			*segp = seg_alloc(hashp);
 		if (*segp == NULL)
 			return false;
+		i = i + 1;
 	}
 
 	/* Choose number of entries to allocate at a time */
@@ -851,11 +879,36 @@ hash_select_dirsize(long num_entries)
  * and for the (non expansible) directory.
  */
 Size
-hash_get_shared_size(HASHCTL *info, int flags)
+hash_get_shared_size(HASHCTL *info, int flags, long init_size)
 {
+	int			nbuckets;
+	int			nsegs;
+	int			num_partitions;
+	int			ssize;
+	Size		elementSize = MAXALIGN(sizeof(HASHELEMENT)) + MAXALIGN(info->entrysize);
+
 	Assert(flags & HASH_DIRSIZE);
 	Assert(info->dsize == info->max_dsize);
-	return sizeof(HASHHDR) + info->dsize * sizeof(HASHSEGMENT);
+
+	if (flags & HASH_PARTITION)
+		num_partitions = info->num_partitions;
+	else
+		num_partitions = 0;
+
+	if (flags & HASH_SEGMENT)
+		ssize = info->ssize;
+	else
+		ssize = DEF_SEGSIZE;
+
+	nsegs = compute_buckets_and_segs(init_size, &nbuckets, num_partitions, ssize);
+
+	/* Number of entries should be atleast equal to number of partitions */
+	if (init_size < num_partitions)
+		init_size = num_partitions;
+
+	return sizeof(HASHHDR) + info->dsize * sizeof(HASHSEGMENT) +
+		+sizeof(HASHBUCKET) * ssize * nsegs
+		+ init_size * elementSize;
 }
 
 
@@ -1285,7 +1338,8 @@ get_hash_entry(HTAB *hashp, int freelist_idx)
 		 * Failing because the needed element is in a different freelist is
 		 * not acceptable.
 		 */
-		if (!element_alloc(hashp, hctl->nelem_alloc, freelist_idx))
+		newElement = element_alloc(hashp, hctl->nelem_alloc);
+		if (newElement == NULL)
 		{
 			int			borrow_from_idx;
 
@@ -1322,6 +1376,7 @@ get_hash_entry(HTAB *hashp, int freelist_idx)
 			/* no elements available to borrow either, so out of memory */
 			return NULL;
 		}
+		element_add(hashp, newElement, freelist_idx, hctl->nelem_alloc);
 	}
 
 	/* remove entry from freelist, bump nentries */
@@ -1702,28 +1757,38 @@ seg_alloc(HTAB *hashp)
 /*
  * allocate some new elements and link them into the indicated free list
  */
-static bool
-element_alloc(HTAB *hashp, int nelem, int freelist_idx)
+static HASHELEMENT *
+element_alloc(HTAB *hashp, int nelem)
 {
 	HASHHDR    *hctl = hashp->hctl;
 	Size		elementSize;
-	HASHELEMENT *firstElement;
-	HASHELEMENT *tmpElement;
-	HASHELEMENT *prevElement;
-	int			i;
+	HASHELEMENT *firstElement = NULL;
 
 	if (hashp->isfixed)
-		return false;
+		return NULL;
 
 	/* Each element has a HASHELEMENT header plus user data. */
 	elementSize = MAXALIGN(sizeof(HASHELEMENT)) + MAXALIGN(hctl->entrysize);
-
 	CurrentDynaHashCxt = hashp->hcxt;
 	firstElement = (HASHELEMENT *) hashp->alloc(nelem * elementSize);
 
 	if (!firstElement)
-		return false;
+		return NULL;
 
+	return firstElement;
+}
+
+static void
+element_add(HTAB *hashp, HASHELEMENT *firstElement, int freelist_idx, int nelem)
+{
+	HASHHDR    *hctl = hashp->hctl;
+	Size		elementSize;
+	HASHELEMENT *tmpElement;
+	HASHELEMENT *prevElement;
+	int			i;
+
+	/* Each element has a HASHELEMENT header plus user data. */
+	elementSize = MAXALIGN(sizeof(HASHELEMENT)) + MAXALIGN(hctl->entrysize);
 	/* prepare to link all the new entries into the freelist */
 	prevElement = NULL;
 	tmpElement = firstElement;
@@ -1744,8 +1809,6 @@ element_alloc(HTAB *hashp, int nelem, int freelist_idx)
 
 	if (IS_PARTITIONED(hctl))
 		SpinLockRelease(&hctl->freeList[freelist_idx].mutex);
-
-	return true;
 }
 
 /*
@@ -1956,4 +2019,33 @@ AtEOSubXact_HashTables(bool isCommit, int nestDepth)
 			num_seq_scans--;
 		}
 	}
+}
+
+static int
+compute_buckets_and_segs(long nelem, int *nbuckets, long num_partitions, long ssize)
+{
+	int			nsegs;
+
+	/*
+	 * Allocate space for the next greater power of two number of buckets,
+	 * assuming a desired maximum load factor of 1.
+	 */
+	*nbuckets = next_pow2_int(nelem);
+
+	/*
+	 * In a partitioned table, nbuckets must be at least equal to
+	 * num_partitions; were it less, keys with apparently different partition
+	 * numbers would map to the same bucket, breaking partition independence.
+	 * (Normally nbuckets will be much bigger; this is just a safety check.)
+	 */
+	while ((*nbuckets) < num_partitions)
+		(*nbuckets) <<= 1;
+
+
+	/*
+	 * Figure number of directory segments needed, round up to a power of 2
+	 */
+	nsegs = ((*nbuckets) - 1) / ssize + 1;
+	nsegs = next_pow2_int(nsegs);
+	return nsegs;
 }
