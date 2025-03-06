@@ -276,12 +276,13 @@ static void hash_corrupted(HTAB *hashp) pg_attribute_noreturn();
 static uint32 hash_initial_lookup(HTAB *hashp, uint32 hashvalue,
 								  HASHBUCKET **bucketptr);
 static long next_pow2_long(long num);
+static int	next_pow2_int(long num);
 static void register_seq_scan(HTAB *hashp);
 static void deregister_seq_scan(HTAB *hashp);
 static bool has_seq_scans(HTAB *hashp);
 
-static int find_num_of_segs(long nelem, int *nbuckets,
-					long num_partitions, long ssize);
+static int	compute_buckets_and_segs(long nelem, int *nbuckets,
+									 long num_partitions, long ssize);
 static void element_add(HTAB *hashp, HASHELEMENT *firstElement, int freelist_idx, int nelem);
 
 /*
@@ -607,7 +608,7 @@ hash_create(const char *tabname, long nelem, const HASHCTL *info, int flags)
 			int			nsegs;
 			int			nbuckets;
 
-			nsegs = find_num_of_segs(nelem, &nbuckets, hctl->num_partitions, hctl->ssize);
+			nsegs = compute_buckets_and_segs(nelem, &nbuckets, hctl->num_partitions, hctl->ssize);
 
 			curr_offset = (((char *) hashp->hctl) + sizeof(HASHHDR) + (info->dsize * sizeof(HASHSEGMENT)) +
 						   +(sizeof(HASHBUCKET) * hctl->ssize * nsegs));
@@ -648,9 +649,9 @@ hash_create(const char *tabname, long nelem, const HASHCTL *info, int flags)
 				if (!firstElement)
 					ereport(ERROR,
 							(errcode(ERRCODE_OUT_OF_MEMORY),
-						 	errmsg("out of memory")));
+							 errmsg("out of memory")));
 			}
-			element_add(hashp, firstElement, i, temp); 
+			element_add(hashp, firstElement, i, temp);
 		}
 	}
 
@@ -738,7 +739,7 @@ init_htab(HTAB *hashp, long nelem)
 		for (i = 0; i < NUM_FREELISTS; i++)
 			SpinLockInit(&(hctl->freeList[i].mutex));
 
-	nsegs = find_num_of_segs(nelem, &nbuckets, hctl->num_partitions, hctl->ssize);
+	nsegs = compute_buckets_and_segs(nelem, &nbuckets, hctl->num_partitions, hctl->ssize);
 
 	hctl->max_bucket = hctl->low_mask = nbuckets - 1;
 	hctl->high_mask = (nbuckets << 1) - 1;
@@ -901,7 +902,7 @@ hash_get_shared_size(HASHCTL *info, int flags, long init_size)
 	else
 		ssize = DEF_SEGSIZE;
 
-	nsegs = find_num_of_segs(init_size, &nbuckets, num_partitions, ssize);
+	nsegs = compute_buckets_and_segs(init_size, &nbuckets, num_partitions, ssize);
 
 	/* Number of entries should be atleast equal to number of partitions */
 	if (init_size < num_partitions)
@@ -1338,7 +1339,7 @@ get_hash_entry(HTAB *hashp, int freelist_idx)
 		 * can insert a new element, even if shared memory is entirely full.
 		 * Failing because the needed element is in a different freelist is
 		 * not acceptable.
-		 */	
+		 */
 		newElement = element_alloc(hashp, hctl->nelem_alloc);
 		if (newElement == NULL)
 		{
@@ -1745,7 +1746,6 @@ seg_alloc(HTAB *hashp)
 	HASHSEGMENT segp;
 
 	CurrentDynaHashCxt = hashp->hcxt;
-
 	segp = (HASHSEGMENT) hashp->alloc(sizeof(HASHBUCKET) * hashp->ssize);
 
 	if (!segp)
@@ -1773,7 +1773,7 @@ element_alloc(HTAB *hashp, int nelem)
 	elementSize = MAXALIGN(sizeof(HASHELEMENT)) + MAXALIGN(hctl->entrysize);
 	CurrentDynaHashCxt = hashp->hcxt;
 	firstElement = (HASHELEMENT *) hashp->alloc(nelem * elementSize);
-	
+
 	if (!firstElement)
 		return NULL;
 
@@ -1881,7 +1881,7 @@ next_pow2_long(long num)
 }
 
 /* calculate first power of 2 >= num, bounded to what will fit in an int */
-int
+static int
 next_pow2_int(long num)
 {
 	if (num > INT_MAX / 2)
@@ -2024,7 +2024,7 @@ AtEOSubXact_HashTables(bool isCommit, int nestDepth)
 }
 
 static int
-find_num_of_segs(long nelem, int *nbuckets, long num_partitions, long ssize)
+compute_buckets_and_segs(long nelem, int *nbuckets, long num_partitions, long ssize)
 {
 	int			nsegs;
 
