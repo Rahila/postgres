@@ -88,6 +88,7 @@ static void RemoveProcFromArray(int code, Datum arg);
 static void ProcKill(int code, Datum arg);
 static void AuxiliaryProcKill(int code, Datum arg);
 static void CheckDeadLock(void);
+static Size PGProcShmemSize(void);
 
 
 /*
@@ -175,10 +176,11 @@ InitProcGlobal(void)
 			   *fpEndPtr PG_USED_FOR_ASSERTS_ONLY;
 	Size		fpLockBitsSize,
 				fpRelIdSize;
+	Size	requestSize;
 
 	/* Create the ProcGlobal shared structure */
 	ProcGlobal = (PROC_HDR *)
-		ShmemInitStruct("Proc Header", sizeof(PROC_HDR), &found);
+			ShmemInitStruct("Proc Header", sizeof(PROC_HDR), &found);
 	Assert(!found);
 
 	/*
@@ -204,7 +206,10 @@ InitProcGlobal(void)
 	 * with a single freelist.)  Each PGPROC structure is dedicated to exactly
 	 * one of these purposes, and they do not move between groups.
 	 */
-	procs = (PGPROC *) ShmemAlloc(TotalProcs * sizeof(PGPROC));
+	requestSize = PGProcShmemSize();
+
+	procs = (PGPROC *) ShmemInitStruct("PGPROC structures", requestSize, &found);
+
 	MemSet(procs, 0, TotalProcs * sizeof(PGPROC));
 	ProcGlobal->allProcs = procs;
 	/* XXX allProcCount isn't really all of them; it excludes prepared xacts */
@@ -218,11 +223,11 @@ InitProcGlobal(void)
 	 * how hotly they are accessed.
 	 */
 	ProcGlobal->xids =
-		(TransactionId *) ShmemInitStruct("Proc Transaction Ids", TotalProcs * sizeof(*ProcGlobal->xids), &found);
+		(TransactionId *) ((char *) procs + TotalProcs * sizeof(PGPROC));
 	MemSet(ProcGlobal->xids, 0, TotalProcs * sizeof(*ProcGlobal->xids));
-	ProcGlobal->subxidStates = (XidCacheStatus *) ShmemInitStruct("Proc Sub-transaction id states", TotalProcs * sizeof(*ProcGlobal->subxidStates), &found);
+	ProcGlobal->subxidStates = (XidCacheStatus *) ((char *) ProcGlobal->xids + TotalProcs * sizeof(*ProcGlobal->xids) + PG_CACHE_LINE_SIZE); 
 	MemSet(ProcGlobal->subxidStates, 0, TotalProcs * sizeof(*ProcGlobal->subxidStates));
-	ProcGlobal->statusFlags = (uint8 *) ShmemInitStruct("Proc Status Flags", TotalProcs * sizeof(*ProcGlobal->statusFlags), &found);
+	ProcGlobal->statusFlags = (XidCacheStatus *)  ((char *) ProcGlobal->subxidStates + TotalProcs * sizeof(*ProcGlobal->subxidStates) + PG_CACHE_LINE_SIZE);
 	MemSet(ProcGlobal->statusFlags, 0, TotalProcs * sizeof(*ProcGlobal->statusFlags));
 
 	/*
@@ -334,6 +339,21 @@ InitProcGlobal(void)
 	SpinLockInit(ProcStructLock);
 }
 
+static Size
+PGProcShmemSize(void)
+{
+	Size size;
+	uint32		TotalProcs = MaxBackends + NUM_AUXILIARY_PROCS + max_prepared_xacts;
+
+	size = TotalProcs * sizeof(PGPROC);
+	size = add_size(size, TotalProcs * sizeof(*ProcGlobal->xids));
+	size = add_size(size, PG_CACHE_LINE_SIZE);
+	size = add_size(size, TotalProcs * sizeof(*ProcGlobal->subxidStates));
+	size = add_size(size, PG_CACHE_LINE_SIZE);
+	size = add_size(size, TotalProcs * sizeof(*ProcGlobal->statusFlags));
+	size = add_size(size, PG_CACHE_LINE_SIZE);
+	return size;
+}
 /*
  * InitProcess -- initialize a per-process PGPROC entry for this backend
  */
