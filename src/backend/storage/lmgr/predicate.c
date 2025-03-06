@@ -1226,9 +1226,9 @@ PredicateLockShmemInit(void)
 	 */
 	max_table_size *= 10;
 
-	requestSize = add_size(PredXactListDataSize, 
-					(mul_size((Size) max_table_size,
-							   sizeof(SERIALIZABLEXACT))));
+	requestSize = add_size(PredXactListDataSize,
+						   (mul_size((Size) max_table_size,
+									 sizeof(SERIALIZABLEXACT))));
 	PredXact = ShmemInitStruct("PredXactList",
 							   requestSize,
 							   &found);
@@ -1245,7 +1245,7 @@ PredicateLockShmemInit(void)
 		PredXact->LastSxactCommitSeqNo = FirstNormalSerCommitSeqNo - 1;
 		PredXact->CanPartialClearThrough = 0;
 		PredXact->HavePartialClearedThrough = 0;
-		PredXact->element = (SERIALIZABLEXACT *)((char *) PredXact + PredXactListDataSize);
+		PredXact->element = (SERIALIZABLEXACT *) ((char *) PredXact + PredXactListDataSize);
 		/* Add all elements to available list, clean. */
 		memset(PredXact->element, 0, requestSize);
 		for (i = 0; i < max_table_size; i++)

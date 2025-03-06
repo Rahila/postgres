@@ -176,11 +176,11 @@ InitProcGlobal(void)
 			   *fpEndPtr PG_USED_FOR_ASSERTS_ONLY;
 	Size		fpLockBitsSize,
 				fpRelIdSize;
-	Size	requestSize;
+	Size		requestSize;
 
 	/* Create the ProcGlobal shared structure */
 	ProcGlobal = (PROC_HDR *)
-			ShmemInitStruct("Proc Header", sizeof(PROC_HDR), &found);
+		ShmemInitStruct("Proc Header", sizeof(PROC_HDR), &found);
 	Assert(!found);
 
 	/*
@@ -225,9 +225,9 @@ InitProcGlobal(void)
 	ProcGlobal->xids =
 		(TransactionId *) ((char *) procs + TotalProcs * sizeof(PGPROC));
 	MemSet(ProcGlobal->xids, 0, TotalProcs * sizeof(*ProcGlobal->xids));
-	ProcGlobal->subxidStates = (XidCacheStatus *) ((char *) ProcGlobal->xids + TotalProcs * sizeof(*ProcGlobal->xids) + PG_CACHE_LINE_SIZE); 
+	ProcGlobal->subxidStates = (XidCacheStatus *) ((char *) ProcGlobal->xids + TotalProcs * sizeof(*ProcGlobal->xids) + PG_CACHE_LINE_SIZE);
 	MemSet(ProcGlobal->subxidStates, 0, TotalProcs * sizeof(*ProcGlobal->subxidStates));
-	ProcGlobal->statusFlags = (XidCacheStatus *)  ((char *) ProcGlobal->subxidStates + TotalProcs * sizeof(*ProcGlobal->subxidStates) + PG_CACHE_LINE_SIZE);
+	ProcGlobal->statusFlags = (XidCacheStatus *) ((char *) ProcGlobal->subxidStates + TotalProcs * sizeof(*ProcGlobal->subxidStates) + PG_CACHE_LINE_SIZE);
 	MemSet(ProcGlobal->statusFlags, 0, TotalProcs * sizeof(*ProcGlobal->statusFlags));
 
 	/*
@@ -342,7 +342,7 @@ InitProcGlobal(void)
 static Size
 PGProcShmemSize(void)
 {
-	Size size;
+	Size		size;
 	uint32		TotalProcs = MaxBackends + NUM_AUXILIARY_PROCS + max_prepared_xacts;
 
 	size = TotalProcs * sizeof(PGPROC);
@@ -354,6 +354,7 @@ PGProcShmemSize(void)
 	size = add_size(size, PG_CACHE_LINE_SIZE);
 	return size;
 }
+
 /*
  * InitProcess -- initialize a per-process PGPROC entry for this backend
  */
