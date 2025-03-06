@@ -120,6 +120,7 @@
  * a good idea of the maximum number of entries!).  For non-shared hash
  * tables, the initial directory size can be left at the default.
  */
+#define DEF_SEGSIZE			   256
 #define DEF_SEGSIZE_SHIFT	   8	/* must be log2(DEF_SEGSIZE) */
 #define DEF_DIRSIZE			   256
 
@@ -264,7 +265,7 @@ static long hash_accesses,
  */
 static void *DynaHashAlloc(Size size);
 static HASHSEGMENT seg_alloc(HTAB *hashp);
-static bool element_alloc(HTAB *hashp, int nelem, int freelist_idx, HASHELEMENT *firstElement);
+static HASHELEMENT *element_alloc(HTAB *hashp, int nelem);
 static bool dir_realloc(HTAB *hashp);
 static bool expand_table(HTAB *hashp);
 static HASHBUCKET get_hash_entry(HTAB *hashp, int freelist_idx);
@@ -278,7 +279,10 @@ static long next_pow2_long(long num);
 static void register_seq_scan(HTAB *hashp);
 static void deregister_seq_scan(HTAB *hashp);
 static bool has_seq_scans(HTAB *hashp);
-static int	find_num_of_segs(long nelem, int *nbuckets, long num_partitions, long ssize);
+
+static int find_num_of_segs(long nelem, int *nbuckets,
+					long num_partitions, long ssize);
+static void element_add(HTAB *hashp, HASHELEMENT *firstElement, int freelist_idx, int nelem);
 
 /*
  * memory allocation support
@@ -467,9 +471,7 @@ hash_create(const char *tabname, long nelem, const HASHCTL *info, int flags)
 		hashp->keycopy = memcpy;
 
 	/*
-	 * And select the entry allocation function, too. XXX should this also
-	 * Assert that flags & HASH_SHARED_MEM is true, since HASH_ALLOC is
-	 * currently only set with HASH_SHARED_MEM *
+	 * And select the entry allocation function, too.
 	 */
 	if (flags & HASH_ALLOC)
 		hashp->alloc = info->alloc;
@@ -585,7 +587,7 @@ hash_create(const char *tabname, long nelem, const HASHCTL *info, int flags)
 					freelist_partitions,
 					nelem_alloc,
 					nelem_alloc_first;
-		void	   *curr_offset;
+		void	   *curr_offset = NULL;
 
 		/*
 		 * If hash table is partitioned, give each freelist an equal share of
@@ -636,15 +638,19 @@ hash_create(const char *tabname, long nelem, const HASHCTL *info, int flags)
 			 * ShmemInitHash
 			 */
 			if (hashp->isshared)
+			{
 				firstElement = (HASHELEMENT *) curr_offset;
+				curr_offset = (((char *) curr_offset) + (temp * elementSize));
+			}
 			else
-				firstElement = NULL;
-
-			if (!element_alloc(hashp, temp, i, firstElement))
-				ereport(ERROR,
-						(errcode(ERRCODE_OUT_OF_MEMORY),
-						 errmsg("out of memory")));
-			curr_offset = (((char *) curr_offset) + (temp * elementSize));
+			{
+				firstElement = element_alloc(hashp, temp);
+				if (!firstElement)
+					ereport(ERROR,
+							(errcode(ERRCODE_OUT_OF_MEMORY),
+						 	errmsg("out of memory")));
+			}
+			element_add(hashp, firstElement, i, temp); 
 		}
 	}
 
@@ -764,10 +770,13 @@ init_htab(HTAB *hashp, long nelem)
 	for (segp = hashp->dir; hctl->nsegs < nsegs; hctl->nsegs++, segp++)
 	{
 		if (hashp->isshared)
+		{
 			*segp = (HASHBUCKET *) (((char *) hashp->hctl)
 									+ sizeof(HASHHDR)
 									+ (hashp->hctl->dsize * sizeof(HASHSEGMENT))
 									+ (i * sizeof(HASHBUCKET) * hashp->ssize));
+			MemSet(*segp, 0, sizeof(HASHBUCKET) * hashp->ssize);
+		}
 		else
 			*segp = seg_alloc(hashp);
 		if (*segp == NULL)
@@ -893,6 +902,10 @@ hash_get_shared_size(HASHCTL *info, int flags, long init_size)
 		ssize = DEF_SEGSIZE;
 
 	nsegs = find_num_of_segs(init_size, &nbuckets, num_partitions, ssize);
+
+	/* Number of entries should be atleast equal to number of partitions */
+	if (init_size < num_partitions)
+		init_size = num_partitions;
 
 	return sizeof(HASHHDR) + info->dsize * sizeof(HASHSEGMENT) +
 		+sizeof(HASHBUCKET) * ssize * nsegs
@@ -1325,8 +1338,9 @@ get_hash_entry(HTAB *hashp, int freelist_idx)
 		 * can insert a new element, even if shared memory is entirely full.
 		 * Failing because the needed element is in a different freelist is
 		 * not acceptable.
-		 */
-		if (!element_alloc(hashp, hctl->nelem_alloc, freelist_idx, NULL))
+		 */	
+		newElement = element_alloc(hashp, hctl->nelem_alloc);
+		if (newElement == NULL)
 		{
 			int			borrow_from_idx;
 
@@ -1363,6 +1377,7 @@ get_hash_entry(HTAB *hashp, int freelist_idx)
 			/* no elements available to borrow either, so out of memory */
 			return NULL;
 		}
+		element_add(hashp, newElement, freelist_idx, hctl->nelem_alloc);
 	}
 
 	/* remove entry from freelist, bump nentries */
@@ -1744,8 +1759,29 @@ seg_alloc(HTAB *hashp)
 /*
  * allocate some new elements and link them into the indicated free list
  */
-static bool
-element_alloc(HTAB *hashp, int nelem, int freelist_idx, HASHELEMENT *firstElement)
+static HASHELEMENT *
+element_alloc(HTAB *hashp, int nelem)
+{
+	HASHHDR    *hctl = hashp->hctl;
+	Size		elementSize;
+	HASHELEMENT *firstElement = NULL;
+
+	if (hashp->isfixed)
+		return NULL;
+
+	/* Each element has a HASHELEMENT header plus user data. */
+	elementSize = MAXALIGN(sizeof(HASHELEMENT)) + MAXALIGN(hctl->entrysize);
+	CurrentDynaHashCxt = hashp->hcxt;
+	firstElement = (HASHELEMENT *) hashp->alloc(nelem * elementSize);
+	
+	if (!firstElement)
+		return NULL;
+
+	return firstElement;
+}
+
+static void
+element_add(HTAB *hashp, HASHELEMENT *firstElement, int freelist_idx, int nelem)
 {
 	HASHHDR    *hctl = hashp->hctl;
 	Size		elementSize;
@@ -1753,19 +1789,8 @@ element_alloc(HTAB *hashp, int nelem, int freelist_idx, HASHELEMENT *firstElemen
 	HASHELEMENT *prevElement;
 	int			i;
 
-	if (hashp->isfixed)
-		return false;
-
 	/* Each element has a HASHELEMENT header plus user data. */
 	elementSize = MAXALIGN(sizeof(HASHELEMENT)) + MAXALIGN(hctl->entrysize);
-	if (!firstElement)
-	{
-		CurrentDynaHashCxt = hashp->hcxt;
-		firstElement = (HASHELEMENT *) hashp->alloc(nelem * elementSize);
-	}
-	if (!firstElement)
-		return false;
-
 	/* prepare to link all the new entries into the freelist */
 	prevElement = NULL;
 	tmpElement = firstElement;
@@ -1786,8 +1811,6 @@ element_alloc(HTAB *hashp, int nelem, int freelist_idx, HASHELEMENT *firstElemen
 
 	if (IS_PARTITIONED(hctl))
 		SpinLockRelease(&hctl->freeList[freelist_idx].mutex);
-
-	return true;
 }
 
 /*
