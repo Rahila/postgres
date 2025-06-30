@@ -40,6 +40,7 @@
 
 #include "mb/pg_wchar.h"
 #include "miscadmin.h"
+#include "utils/hsearch.h"
 #include "utils/memdebug.h"
 #include "utils/memutils.h"
 #include "utils/memutils_internal.h"
@@ -176,10 +177,6 @@ MemoryContext PortalContext = NULL;
 
 static void MemoryContextDeleteOnly(MemoryContext context);
 static void MemoryContextCallResetCallbacks(MemoryContext context);
-static void MemoryContextStatsInternal(MemoryContext context, int level,
-									   int max_level, int max_children,
-									   MemoryContextCounters *totals,
-									   bool print_to_stderr);
 static void MemoryContextStatsPrint(MemoryContext context, void *passthru,
 									const char *stats_string,
 									bool print_to_stderr);
@@ -877,11 +874,19 @@ MemoryContextStatsDetail(MemoryContext context,
 						 bool print_to_stderr)
 {
 	MemoryContextCounters grand_totals;
+	int			num_contexts;
+	PrintDestination print_location;
 
 	memset(&grand_totals, 0, sizeof(grand_totals));
 
+	if (print_to_stderr)
+		print_location = PRINT_STATS_TO_STDERR;
+	else
+		print_location = PRINT_STATS_TO_LOGS;
+
+	/* num_contexts report number of contexts aggregated in the output */
 	MemoryContextStatsInternal(context, 1, max_level, max_children,
-							   &grand_totals, print_to_stderr);
+							   &grand_totals, print_location, &num_contexts);
 
 	if (print_to_stderr)
 		fprintf(stderr,
@@ -916,13 +921,14 @@ MemoryContextStatsDetail(MemoryContext context,
  *		One recursion level for MemoryContextStats
  *
  * Print stats for this context if possible, but in any case accumulate counts
- * into *totals (if not NULL).
+ * into *totals (if not NULL). The callers should make sure that print_location
+ * is set to PRINT_STATS_TO_STDERR or PRINT_STATS_TO_LOGS or PRINT_STATS_NONE.
  */
-static void
+void
 MemoryContextStatsInternal(MemoryContext context, int level,
 						   int max_level, int max_children,
 						   MemoryContextCounters *totals,
-						   bool print_to_stderr)
+						   PrintDestination print_location, int *num_contexts)
 {
 	MemoryContext child;
 	int			ichild;
@@ -930,10 +936,39 @@ MemoryContextStatsInternal(MemoryContext context, int level,
 	Assert(MemoryContextIsValid(context));
 
 	/* Examine the context itself */
-	context->methods->stats(context,
-							MemoryContextStatsPrint,
-							&level,
-							totals, print_to_stderr);
+	switch (print_location)
+	{
+		case PRINT_STATS_TO_STDERR:
+			context->methods->stats(context,
+									MemoryContextStatsPrint,
+									&level,
+									totals, true);
+			break;
+
+		case PRINT_STATS_TO_LOGS:
+			context->methods->stats(context,
+									MemoryContextStatsPrint,
+									&level,
+									totals, false);
+			break;
+
+		case PRINT_STATS_NONE:
+
+			/*
+			 * Do not print the statistics if print_location is
+			 * PRINT_STATS_NONE, only compute totals. This is used in
+			 * reporting of memory context statistics via a sql function. Last
+			 * parameter is not relevant.
+			 */
+			context->methods->stats(context,
+									NULL,
+									NULL,
+									totals, false);
+			break;
+	}
+
+	/* Increment the context count for each of the recursive call */
+	*num_contexts = *num_contexts + 1;
 
 	/*
 	 * Examine children.
@@ -953,7 +988,7 @@ MemoryContextStatsInternal(MemoryContext context, int level,
 			MemoryContextStatsInternal(child, level + 1,
 									   max_level, max_children,
 									   totals,
-									   print_to_stderr);
+									   print_location, num_contexts);
 		}
 	}
 
@@ -972,7 +1007,13 @@ MemoryContextStatsInternal(MemoryContext context, int level,
 			child = MemoryContextTraverseNext(child, context);
 		}
 
-		if (print_to_stderr)
+		/*
+		 * Add the count of children contexts which are traversed in the
+		 * non-recursive manner.
+		 */
+		*num_contexts = *num_contexts + ichild;
+
+		if (print_location == PRINT_STATS_TO_STDERR)
 		{
 			for (int i = 0; i < level; i++)
 				fprintf(stderr, "  ");
@@ -985,7 +1026,7 @@ MemoryContextStatsInternal(MemoryContext context, int level,
 					local_totals.freechunks,
 					local_totals.totalspace - local_totals.freespace);
 		}
-		else
+		else if (print_location == PRINT_STATS_TO_LOGS)
 			ereport(LOG_SERVER_ONLY,
 					(errhidestmt(true),
 					 errhidecontext(true),

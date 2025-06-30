@@ -18,7 +18,10 @@
 #define MEMUTILS_H
 
 #include "nodes/memnodes.h"
-
+#include "storage/condition_variable.h"
+#include "storage/lmgr.h"
+#include "utils/dsa.h"
+#include "lib/dshash.h"
 
 /*
  * MaxAllocSize, MaxAllocHugeSize
@@ -48,6 +51,23 @@
 
 #define AllocHugeSizeIsValid(size)	((Size) (size) <= MaxAllocHugeSize)
 
+/*
+ * Memory Context reporting size limits.
+ */
+
+/* Max length of context name and ident */
+#define MEMORY_CONTEXT_IDENT_SHMEM_SIZE 64
+/* Maximum size (in bytes) of DSA area per process */
+#define MEMORY_CONTEXT_REPORT_MAX_PER_BACKEND  ((size_t) (1 * 1024 * 1024))
+
+/*
+ * Maximum size per context. Actual size may be lower as this assumes the worst
+ * case of deepest path and longest identifiers (name and ident, thus the
+ * multiplication by 2). The path depth is limited to 100 like for memory
+ * context logging.
+ */
+#define MAX_MEMORY_CONTEXT_STATS_SIZE (sizeof(MemoryStatsEntry))
+#define MAX_MEMORY_CONTEXT_STATS_NUM MEMORY_CONTEXT_REPORT_MAX_PER_BACKEND / MAX_MEMORY_CONTEXT_STATS_SIZE
 
 /*
  * Standard top-level memory contexts.
@@ -319,4 +339,74 @@ pg_memory_is_all_zeros(const void *ptr, size_t len)
 	return true;
 }
 
+/* Dynamic shared memory state for statistics per context */
+typedef struct MemoryStatsEntry
+{
+	char		name[MEMORY_CONTEXT_IDENT_SHMEM_SIZE];
+	char		ident[MEMORY_CONTEXT_IDENT_SHMEM_SIZE];
+	int			path[100];
+	NodeTag		type;
+	int			path_length;
+	int			levels;
+	int64		totalspace;
+	int64		nblocks;
+	int64		freespace;
+	int64		freechunks;
+	int			num_agg_stats;
+} MemoryStatsEntry;
+
+/*
+ * Per backend dynamic shared hash entry for memory context statistics
+ * reporting.
+ */
+typedef struct MemoryStatsDSHashEntry
+{
+	char		key[64];
+	ConditionVariable memcxt_cv;
+	int			proc_id;
+	int			total_stats;
+	bool		summary;
+	dsa_pointer memstats_dsa_pointer;
+	TimestampTz stats_timestamp;
+} MemoryStatsDSHashEntry;
+
+static const dshash_parameters memctx_dsh_params = {
+	offsetof(MemoryStatsDSHashEntry, memcxt_cv),
+	sizeof(MemoryStatsDSHashEntry),
+	dshash_strcmp,
+	dshash_strhash,
+	dshash_strcpy
+};
+
+/*
+ * Used for storage of transient identifiers for pg_get_backend_memory_contexts
+ */
+typedef struct MemoryStatsContextId
+{
+	MemoryContext context;
+	int			context_id;
+} MemoryStatsContextId;
+
+/*
+ * This is passed to MemoryContextStatsInternal to determine whether
+ * to print context statistics or not and where to print them logs or
+ * stderr.
+ */
+typedef enum PrintDestination
+{
+	PRINT_STATS_TO_STDERR = 0,
+	PRINT_STATS_TO_LOGS,
+	PRINT_STATS_NONE
+}			PrintDestination;
+
+extern void ProcessGetMemoryContextInterrupt(void);
+extern void HandleGetMemoryContextInterrupt(void);
+extern void MemoryContextKeysShmemInit(void);
+extern Size MemoryContextKeysShmemSize(void);
+extern void MemoryContextStatsInternal(MemoryContext context, int level,
+									   int max_level, int max_children,
+									   MemoryContextCounters *totals,
+									   PrintDestination print_location,
+									   int *num_contexts);
+extern void AtProcExit_memstats_cleanup(int code, Datum arg);
 #endif							/* MEMUTILS_H */
