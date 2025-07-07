@@ -1626,7 +1626,7 @@ expand_table(HTAB *hashp)
 		 currElement = nextElement)
 	{
 		nextElement = currElement->link;
-		if ((long) calc_bucket(hctl, currElement->hashvalue) == old_bucket)
+		if (!(currElement->hashvalue & (hctl->low_mask + 1)))
 		{
 			*oldlink = currElement;
 			oldlink = &currElement->link;
