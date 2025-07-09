@@ -3111,12 +3111,12 @@ XLogSendPhysical(void)
 		WalSndCaughtUp = true;
 		return;
 	}
-
+/*
 	if (am_cascading_walsender)
 		flushPtr = GetStandbyFlushRecPtr(NULL);
 	else
 		flushPtr = GetFlushRecPtr(NULL);
-
+*/
 	/* Figure out how far we can safely send the WAL. */
 	if (sendTimeLineIsHistoric)
 	{
@@ -3331,6 +3331,7 @@ retry:
 	output_message.len += rbytes;
 	startptr += rbytes;
 	nbytes -= rbytes;
+	elog(LOG, "Bytes sent from buffer %ld", rbytes);
 
 	/* now read the remaining WAL from WAL file */
 	if (nbytes > 0 &&
@@ -3343,6 +3344,7 @@ retry:
 											 * whether new TLI is needed. */
 				 &errinfo))
 		WALReadRaiseError(&errinfo);
+	elog(LOG, "Bytes sent from file %ld", nbytes);
 
 	/* See logical_read_xlog_page(). */
 	XLByteToSeg(startptr, segno, xlogreader->segcxt.ws_segsize);
