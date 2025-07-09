@@ -3331,7 +3331,7 @@ retry:
 	output_message.len += rbytes;
 	startptr += rbytes;
 	nbytes -= rbytes;
-	elog(LOG, "Bytes sent from buffer %ld", rbytes);
+	elog(LOG, "Bytes sent from buffer %lu", rbytes);
 
 	/* now read the remaining WAL from WAL file */
 	if (nbytes > 0 &&
@@ -3344,7 +3344,7 @@ retry:
 											 * whether new TLI is needed. */
 				 &errinfo))
 		WALReadRaiseError(&errinfo);
-	elog(LOG, "Bytes sent from file %ld", nbytes);
+	elog(LOG, "Bytes sent from file %lu", nbytes);
 
 	/* See logical_read_xlog_page(). */
 	XLByteToSeg(startptr, segno, xlogreader->segcxt.ws_segsize);
