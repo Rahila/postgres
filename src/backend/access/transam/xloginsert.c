@@ -526,6 +526,9 @@ XLogInsert(RmgrId rmid, uint8 info)
 
 	XLogResetInsertion();
 
+	/* Wake up Walsender and let it know that we inserted new WAL */
+	WalSndWakeupProcessRequests(true, !RecoveryInProgress());
+
 	return EndPos;
 }
 

@@ -3112,6 +3112,11 @@ XLogSendPhysical(void)
 		return;
 	}
 
+	if (am_cascading_walsender)
+		flushPtr = GetStandbyFlushRecPtr(NULL);
+	else
+		flushPtr = GetFlushRecPtr(NULL);
+
 	/* Figure out how far we can safely send the WAL. */
 	if (sendTimeLineIsHistoric)
 	{
@@ -3196,7 +3201,11 @@ XLogSendPhysical(void)
 		 * primary: if the primary subsequently crashes and restarts, standbys
 		 * must not have applied any WAL that got lost on the primary.
 		 */
-		SendRqstPtr = GetFlushRecPtr(NULL);
+		SendRqstPtr = GetLogInsertRecPtr();
+		if (sentPtr >= SendRqstPtr)
+		{
+			SendRqstPtr = WaitXLogInsertionsToFinish(sentPtr);
+		}
 	}
 
 	/*

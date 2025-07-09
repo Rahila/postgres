@@ -934,6 +934,8 @@ XLogInsertRecord(XLogRecData *rdata,
 							class == WALINSERT_SPECIAL_SWITCH, rdata,
 							StartPos, EndPos, insertTLI);
 
+		if (StartPos - StartPos % XLOG_BLCKSZ + XLOG_BLCKSZ < EndPos)
+			WalSndWakeupRequest();
 		/*
 		 * Unless record is flagged as not important, update LSN of last
 		 * important record in the current slot. When holding all locks, just
@@ -6676,6 +6678,16 @@ GetInsertRecPtr(void)
 	SpinLockRelease(&XLogCtl->info_lck);
 
 	return recptr;
+}
+
+XLogRecPtr
+GetLogInsertRecPtr(void)
+{
+       XLogRecPtr      recptr;
+
+       recptr = pg_atomic_read_membarrier_u64(&XLogCtl->logInsertResult);
+
+       return recptr;
 }
 
 /*
