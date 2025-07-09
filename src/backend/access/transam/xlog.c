@@ -704,7 +704,6 @@ static void ReserveXLogInsertLocation(int size, XLogRecPtr *StartPos,
 									  XLogRecPtr *EndPos, XLogRecPtr *PrevPtr);
 static bool ReserveXLogSwitch(XLogRecPtr *StartPos, XLogRecPtr *EndPos,
 							  XLogRecPtr *PrevPtr);
-static XLogRecPtr WaitXLogInsertionsToFinish(XLogRecPtr upto);
 static char *GetXLogBuffer(XLogRecPtr ptr, TimeLineID tli);
 static XLogRecPtr XLogBytePosToRecPtr(uint64 bytepos);
 static XLogRecPtr XLogBytePosToEndRecPtr(uint64 bytepos);
@@ -922,6 +921,9 @@ XLogInsertRecord(XLogRecData *rdata,
 		CopyXLogRecordToWAL(rechdr->xl_tot_len,
 							class == WALINSERT_SPECIAL_SWITCH, rdata,
 							StartPos, EndPos, insertTLI);
+
+		if (StartPos - StartPos % XLOG_BLCKSZ + XLOG_BLCKSZ < EndPos)
+			WalSndWakeupRequest();
 
 		/*
 		 * Unless record is flagged as not important, update LSN of last
@@ -1503,7 +1505,7 @@ WALInsertLockUpdateInsertingAt(XLogRecPtr insertingAt)
  * uninitialized page), and the inserter might need to evict an old WAL buffer
  * to make room for a new one, which in turn requires WALWriteLock.
  */
-static XLogRecPtr
+XLogRecPtr
 WaitXLogInsertionsToFinish(XLogRecPtr upto)
 {
 	uint64		bytepos;
@@ -6518,6 +6520,16 @@ GetInsertRecPtr(void)
 	SpinLockAcquire(&XLogCtl->info_lck);
 	recptr = XLogCtl->LogwrtRqst.Write;
 	SpinLockRelease(&XLogCtl->info_lck);
+
+	return recptr;
+}
+
+XLogRecPtr
+GetLogInsertRecPtr(void)
+{
+	XLogRecPtr	recptr;
+
+	recptr = pg_atomic_read_membarrier_u64(&XLogCtl->logInsertResult);
 
 	return recptr;
 }
