@@ -37,6 +37,7 @@
 #include "miscadmin.h"
 #include "pg_trace.h"
 #include "replication/origin.h"
+#include "replication/walsender.h"
 #include "storage/bufmgr.h"
 #include "storage/proc.h"
 #include "utils/memutils.h"
@@ -531,6 +532,9 @@ XLogInsert(RmgrId rmid, uint8 info)
 	} while (!XLogRecPtrIsValid(EndPos));
 
 	XLogResetInsertion();
+
+	/* Wake up Walsender and let it know that we inserted new WAL */
+	WalSndWakeupProcessRequests(true, !RecoveryInProgress());
 
 	return EndPos;
 }
