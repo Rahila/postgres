@@ -552,6 +552,7 @@ SyncRepReleaseWaiters(void)
 	{
 		walsndctl->lsn[SYNC_REP_WAIT_WRITE] = writePtr;
 		numwrite = SyncRepWakeQueue(false, SYNC_REP_WAIT_WRITE);
+		elog(LOG, "Wake up backends for writePtr %X/%08X",  LSN_FORMAT_ARGS(writePtr));
 	}
 	if (walsndctl->lsn[SYNC_REP_WAIT_FLUSH] < flushPtr)
 	{

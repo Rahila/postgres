@@ -110,6 +110,7 @@ static struct
 {
 	XLogRecPtr	Write;			/* last byte + 1 written out in the standby */
 	XLogRecPtr	Flush;			/* last byte + 1 flushed in the standby */
+	XLogRecPtr	SenderFlush;		/* last byte + 1 flushed in the sender */
 }			LogstreamResult;
 
 /*
@@ -137,7 +138,7 @@ static void WalRcvWaitForStartPosition(XLogRecPtr *startpoint, TimeLineID *start
 static void WalRcvDie(int code, Datum arg);
 static void XLogWalRcvProcessMsg(unsigned char type, char *buf, Size len,
 								 TimeLineID tli);
-static void XLogWalRcvWrite(char *buf, Size nbytes, XLogRecPtr recptr,
+static void XLogWalRcvWrite(char *buf, Size nbytes, XLogRecPtr recptr, XLogRecPtr flushedupto,
 							TimeLineID tli);
 static void XLogWalRcvFlush(bool dying, TimeLineID tli);
 static void XLogWalRcvClose(XLogRecPtr recptr, TimeLineID tli);
@@ -222,6 +223,7 @@ WalReceiverMain(const void *startup_data, size_t startup_data_len)
 	strlcpy(slotname, walrcv->slotname, NAMEDATALEN);
 	is_temp_slot = walrcv->is_temp_slot;
 	startpoint = walrcv->receiveStart;
+	elog(LOG, "Start ptr recv %X/%08X", LSN_FORMAT_ARGS(startpoint)); 
 	startpointTLI = walrcv->receiveStartTLI;
 
 	/*
@@ -821,6 +823,7 @@ XLogWalRcvProcessMsg(unsigned char type, char *buf, Size len, TimeLineID tli)
 	int			hdrlen;
 	XLogRecPtr	dataStart;
 	XLogRecPtr	walEnd;
+	XLogRecPtr	flushedWal;
 	TimestampTz sendTime;
 	bool		replyRequested;
 
@@ -830,7 +833,7 @@ XLogWalRcvProcessMsg(unsigned char type, char *buf, Size len, TimeLineID tli)
 			{
 				StringInfoData incoming_message;
 
-				hdrlen = sizeof(int64) + sizeof(int64) + sizeof(int64);
+				hdrlen = sizeof(int64) + sizeof(int64) + sizeof(int64) + sizeof(int64);
 				if (len < hdrlen)
 					ereport(ERROR,
 							(errcode(ERRCODE_PROTOCOL_VIOLATION),
@@ -842,12 +845,13 @@ XLogWalRcvProcessMsg(unsigned char type, char *buf, Size len, TimeLineID tli)
 				/* read the fields */
 				dataStart = pq_getmsgint64(&incoming_message);
 				walEnd = pq_getmsgint64(&incoming_message);
+				flushedWal = pq_getmsgint64(&incoming_message);		
 				sendTime = pq_getmsgint64(&incoming_message);
 				ProcessWalSndrMessage(walEnd, sendTime);
 
 				buf += hdrlen;
 				len -= hdrlen;
-				XLogWalRcvWrite(buf, len, dataStart, tli);
+				XLogWalRcvWrite(buf, len, dataStart, flushedWal, tli);
 				break;
 			}
 		case PqReplMsg_Keepalive:
@@ -887,7 +891,7 @@ XLogWalRcvProcessMsg(unsigned char type, char *buf, Size len, TimeLineID tli)
  * Write XLOG data to disk.
  */
 static void
-XLogWalRcvWrite(char *buf, Size nbytes, XLogRecPtr recptr, TimeLineID tli)
+XLogWalRcvWrite(char *buf, Size nbytes, XLogRecPtr recptr, XLogRecPtr flushedupto, TimeLineID tli)
 {
 	int			startoff;
 	int			byteswritten;
@@ -960,6 +964,8 @@ XLogWalRcvWrite(char *buf, Size nbytes, XLogRecPtr recptr, TimeLineID tli)
 		buf += byteswritten;
 
 		LogstreamResult.Write = recptr;
+		LogstreamResult.SenderFlush = flushedupto;
+		elog(LOG, "Write ptr recv %X/%08X",  LSN_FORMAT_ARGS(recptr));
 	}
 
 	/* Update shared-memory status */
@@ -986,14 +992,22 @@ XLogWalRcvFlush(bool dying, TimeLineID tli)
 {
 	Assert(tli != 0);
 
-	if (LogstreamResult.Flush < LogstreamResult.Write)
+	if ((LogstreamResult.Flush < LogstreamResult.Write) &&
+			(LogstreamResult.Flush < LogstreamResult.SenderFlush))
 	{
 		WalRcvData *walrcv = WalRcv;
+//		XLogRecPtr flush_ptr;
 
 		issue_xlog_fsync(recvFile, recvSegNo, tli);
 
 		LogstreamResult.Flush = LogstreamResult.Write;
-
+		
+//		flush_ptr = LogstreamResult.Flush > LogstreamResult.SenderFlush ? LogstreamResult.SenderFlush :
+//							LogstreamResult.Flush;
+		elog(LOG, "Flush ptr recv %X/%08X",  LSN_FORMAT_ARGS(LogstreamResult.Flush));
+	
+		elog(LOG, "Flush sender ptr recv %X/%08X",  LSN_FORMAT_ARGS(LogstreamResult.SenderFlush));
+	
 		/* Update shared-memory status */
 		SpinLockAcquire(&walrcv->mutex);
 		if (walrcv->flushedUpto < LogstreamResult.Flush)

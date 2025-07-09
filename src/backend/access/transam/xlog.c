@@ -704,7 +704,6 @@ static void ReserveXLogInsertLocation(int size, XLogRecPtr *StartPos,
 									  XLogRecPtr *EndPos, XLogRecPtr *PrevPtr);
 static bool ReserveXLogSwitch(XLogRecPtr *StartPos, XLogRecPtr *EndPos,
 							  XLogRecPtr *PrevPtr);
-static XLogRecPtr WaitXLogInsertionsToFinish(XLogRecPtr upto);
 static char *GetXLogBuffer(XLogRecPtr ptr, TimeLineID tli);
 static XLogRecPtr XLogBytePosToRecPtr(uint64 bytepos);
 static XLogRecPtr XLogBytePosToEndRecPtr(uint64 bytepos);
@@ -923,6 +922,8 @@ XLogInsertRecord(XLogRecData *rdata,
 							class == WALINSERT_SPECIAL_SWITCH, rdata,
 							StartPos, EndPos, insertTLI);
 
+		if (StartPos - StartPos % XLOG_BLCKSZ + XLOG_BLCKSZ < EndPos)
+			WalSndWakeupRequest();
 		/*
 		 * Unless record is flagged as not important, update LSN of last
 		 * important record in the current slot. When holding all locks, just
@@ -1503,7 +1504,7 @@ WALInsertLockUpdateInsertingAt(XLogRecPtr insertingAt)
  * uninitialized page), and the inserter might need to evict an old WAL buffer
  * to make room for a new one, which in turn requires WALWriteLock.
  */
-static XLogRecPtr
+XLogRecPtr
 WaitXLogInsertionsToFinish(XLogRecPtr upto)
 {
 	uint64		bytepos;
@@ -2161,6 +2162,7 @@ AdvanceXLInsertBuffer(XLogRecPtr upto, TimeLineID tli, bool opportunistic)
 			 npages, LSN_FORMAT_ARGS(NewPageEndPtr));
 	}
 #endif
+	elog(LOG, "WAL buffer initialized upto %u, cache block %u", &XLogCtl->InitializedUpTo, &XLogCtl->XLogCacheBlck);
 }
 
 /*
@@ -3735,7 +3737,7 @@ CheckXLogRemoved(XLogSegNo segno, TimeLineID tli)
 
 		XLogFileName(filename, tli, segno, wal_segment_size);
 		errno = save_errno;
-		ereport(ERROR,
+		ereport(PANIC,
 				(errcode_for_file_access(),
 				 errmsg("requested WAL segment %s has already been removed",
 						filename)));
@@ -6520,6 +6522,16 @@ GetInsertRecPtr(void)
 	SpinLockRelease(&XLogCtl->info_lck);
 
 	return recptr;
+}
+
+XLogRecPtr
+GetLogInsertRecPtr(void)
+{
+       XLogRecPtr      recptr;
+
+       recptr = pg_atomic_read_membarrier_u64(&XLogCtl->logInsertResult);
+
+       return recptr;
 }
 
 /*

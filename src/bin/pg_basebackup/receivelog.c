@@ -1068,6 +1068,7 @@ ProcessWALDataMsg(PGconn *conn, StreamCtl *stream, char *copybuf, int len,
 	hdr_len = 1;				/* msgtype PqReplMsg_WALData */
 	hdr_len += 8;				/* dataStart */
 	hdr_len += 8;				/* walEnd */
+	hdr_len += 8;				/* flushPtr */
 	hdr_len += 8;				/* sendTime */
 	if (len < hdr_len)
 	{

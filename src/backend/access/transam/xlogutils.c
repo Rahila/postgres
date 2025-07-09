@@ -815,7 +815,7 @@ wal_segment_open(XLogReaderState *state, XLogSegNo nextSegNo,
 		return;
 
 	if (errno == ENOENT)
-		ereport(ERROR,
+		ereport(PANIC,
 				(errcode_for_file_access(),
 				 errmsg("requested WAL segment %s has already been removed",
 						path)));
