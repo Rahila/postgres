@@ -3334,7 +3334,7 @@ ProcessInterrupts(void)
 			proc_exit(1);
 		}
 		else if (AmWalReceiverProcess())
-			ereport(FATAL,
+			ereport(PANIC,
 					(errcode(ERRCODE_ADMIN_SHUTDOWN),
 					 errmsg("terminating walreceiver process due to administrator command")));
 		else if (AmBackgroundWorkerProcess())

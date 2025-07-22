@@ -371,7 +371,7 @@ WalSndShutdown(void)
 	 */
 	if (whereToSendOutput == DestRemote)
 		whereToSendOutput = DestNone;
-
+	elog(LOG, "Sender exiting");
 	proc_exit(0);
 	abort();					/* keep the compiler quiet */
 }
@@ -1573,8 +1573,10 @@ WalSndWriteData(LogicalDecodingContext *ctx, XLogRecPtr lsn, TransactionId xid,
 
 	/* Try to flush pending output to the client */
 	if (pq_flush_if_writable() != 0)
+	{
+		elog(LOG, "WAL sender is exiting");
 		WalSndShutdown();
-
+	}
 	/* Try taking fast path unless we get too close to walsender timeout. */
 	if (now < TimestampTzPlusMilliseconds(last_reply_timestamp,
 										  wal_sender_timeout / 2) &&
@@ -1631,7 +1633,10 @@ ProcessPendingWrites(void)
 
 		/* Try to flush pending output to the client */
 		if (pq_flush_if_writable() != 0)
+		{
+			elog(LOG, "WAL sender is exiting");
 			WalSndShutdown();
+		}
 	}
 
 	/* reactivate latch so WalSndLoop knows to continue */
@@ -1686,7 +1691,10 @@ WalSndUpdateProgress(LogicalDecodingContext *ctx, XLogRecPtr lsn, TransactionId 
 
 		/* Try to flush pending output to the client */
 		if (pq_flush_if_writable() != 0)
+		{
+			elog(LOG, "WAL sender is exiting");
 			WalSndShutdown();
+		}
 
 		/* If we have pending write here, make sure it's actually flushed */
 		if (pq_is_send_pending())
@@ -1909,7 +1917,10 @@ WalSndWaitForWal(XLogRecPtr loc)
 		 * Try to flush any pending output to the client.
 		 */
 		if (pq_flush_if_writable() != 0)
+		{
+			elog(LOG, "WAL sender is exiting");
 			WalSndShutdown();
+		}
 
 		/*
 		 * If we have received CopyDone from the client, sent CopyDone
@@ -2773,7 +2784,7 @@ WalSndCheckTimeOut(void)
 		 */
 		ereport(COMMERROR,
 				(errmsg("terminating walsender process due to replication timeout")));
-
+		elog(LOG, "WAL sender is exiting");
 		WalSndShutdown();
 	}
 }
@@ -2835,7 +2846,10 @@ WalSndLoop(WalSndSendDataCallback send_data)
 
 		/* Try to flush pending output to the client */
 		if (pq_flush_if_writable() != 0)
+		{
+			elog(LOG, "WAL sender is exiting");
 			WalSndShutdown();
+		}
 
 		/* If nothing remains to be sent right now ... */
 		if (WalSndCaughtUp && !pq_is_send_pending())
@@ -2864,7 +2878,10 @@ WalSndLoop(WalSndSendDataCallback send_data)
 			 * is not sure which.
 			 */
 			if (got_SIGUSR2)
+			{
+				elog(LOG, "WAL sender is exiting");
 				WalSndDone(send_data);
+			}
 		}
 
 		/* Check for replication timeout. */
@@ -3101,6 +3118,7 @@ XLogSendPhysical(void)
 	XLogSegNo	segno;
 	WALReadError errinfo;
 	Size		rbytes;
+	XLogRecPtr      flushPtr;
 
 	/* If requested switch the WAL sender to the stopping state. */
 	if (got_STOPPING)
@@ -3111,12 +3129,13 @@ XLogSendPhysical(void)
 		WalSndCaughtUp = true;
 		return;
 	}
-/*
+
 	if (am_cascading_walsender)
 		flushPtr = GetStandbyFlushRecPtr(NULL);
 	else
 		flushPtr = GetFlushRecPtr(NULL);
-*/
+	elog(LOG, "Flush ptr at the time of sending %X/%08X", LSN_FORMAT_ARGS(flushPtr));
+
 	/* Figure out how far we can safely send the WAL. */
 	if (sendTimeLineIsHistoric)
 	{
@@ -3268,7 +3287,8 @@ XLogSendPhysical(void)
 
 	/* Do we have any work to do? */
 	Assert(sentPtr <= SendRqstPtr);
-	if (SendRqstPtr <= sentPtr)
+	if (MyWalSnd->flush >= flushPtr &&
+		SendRqstPtr <= sentPtr)
 	{
 		WalSndCaughtUp = true;
 		return;
@@ -3287,6 +3307,7 @@ XLogSendPhysical(void)
 	 */
 	startptr = sentPtr;
 	endptr = startptr;
+	elog(LOG, "Start pointer sent %X/%08X", LSN_FORMAT_ARGS(startptr));
 	endptr += MAX_SEND_SIZE;
 
 	/* if we went beyond SendRqstPtr, back off */
@@ -3304,8 +3325,10 @@ XLogSendPhysical(void)
 		endptr -= (endptr % XLOG_BLCKSZ);
 		WalSndCaughtUp = false;
 	}
+	elog(LOG, "End pointer sent %X/%08X", LSN_FORMAT_ARGS(endptr));
 
 	nbytes = endptr - startptr;
+	Assert(nbytes >= 0);
 	Assert(nbytes <= MAX_SEND_SIZE);
 
 	/*
@@ -3315,7 +3338,8 @@ XLogSendPhysical(void)
 	pq_sendbyte(&output_message, 'w');
 
 	pq_sendint64(&output_message, startptr);	/* dataStart */
-	pq_sendint64(&output_message, SendRqstPtr); /* walEnd */
+	pq_sendint64(&output_message, endptr); /* walEnd */
+	pq_sendint64(&output_message, flushPtr); /* wal flushed upto */
 	pq_sendint64(&output_message, 0);	/* sendtime, filled in last */
 
 	/*
@@ -3334,7 +3358,7 @@ retry:
 	elog(LOG, "Bytes sent from buffer %lu", rbytes);
 
 	/* now read the remaining WAL from WAL file */
-	if (nbytes > 0 &&
+	if (nbytes > 0 && startptr <= flushPtr && 
 		!WALRead(xlogreader,
 				 &output_message.data[output_message.len],
 				 startptr,
@@ -3382,7 +3406,7 @@ retry:
 	 */
 	resetStringInfo(&tmpbuf);
 	pq_sendint64(&tmpbuf, GetCurrentTimestamp());
-	memcpy(&output_message.data[1 + sizeof(int64) + sizeof(int64)],
+	memcpy(&output_message.data[1 + sizeof(int64) + sizeof(int64) + sizeof(int64)],
 		   tmpbuf.data, sizeof(int64));
 
 	pq_putmessage_noblock('d', output_message.data, output_message.len);
@@ -4129,7 +4153,10 @@ WalSndKeepaliveIfNecessary(void)
 
 		/* Try to flush pending output to the client */
 		if (pq_flush_if_writable() != 0)
+		{
+			elog(LOG, "WAL sender is exiting");
 			WalSndShutdown();
+		}
 	}
 }
 
