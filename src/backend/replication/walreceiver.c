@@ -992,17 +992,18 @@ XLogWalRcvFlush(bool dying, TimeLineID tli)
 {
 	Assert(tli != 0);
 
-	if (LogstreamResult.Flush < LogstreamResult.Write)
+	if (LogstreamResult.Flush < LogstreamResult.Write &&
+			LogstreamResult.Flush < LogstreamResult.SenderFlush)
 	{
 		WalRcvData *walrcv = WalRcv;
-		XLogRecPtr flush_ptr;
+	//	XLogRecPtr flush_ptr;
 
 		issue_xlog_fsync(recvFile, recvSegNo, tli);
 
 		LogstreamResult.Flush = LogstreamResult.Write;
-		
+	/*	
 		flush_ptr = LogstreamResult.Flush > LogstreamResult.SenderFlush ? LogstreamResult.SenderFlush :
-							LogstreamResult.Flush;
+							LogstreamResult.Flush;*/
 		elog(LOG, "Flush ptr recv %X/%08X",  LSN_FORMAT_ARGS(LogstreamResult.Flush));
 	
 		/* Update shared-memory status */
@@ -1010,7 +1011,7 @@ XLogWalRcvFlush(bool dying, TimeLineID tli)
 		if (walrcv->flushedUpto < LogstreamResult.Flush)
 		{
 			walrcv->latestChunkStart = walrcv->flushedUpto;
-			walrcv->flushedUpto = flush_ptr;
+			walrcv->flushedUpto = LogstreamResult.Flush;
 			walrcv->receivedTLI = tli;
 		}
 		SpinLockRelease(&walrcv->mutex);
