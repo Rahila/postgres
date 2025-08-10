@@ -470,7 +470,7 @@ pg_get_process_memory_contexts(PG_FUNCTION_ARGS)
 	}
 	LWLockRelease(client_keys_lock);
 
-	elog("Client: Server pid %d, server proc number %d", pid, procNumber);
+	elog(LOG, "Client: Server pid %d, server proc number %d", pid, procNumber);
 	/*
 	 * Insert an entry for this client in DSHASH table the first time this
 	 * function is called. This entry is deleted when the process exits in
@@ -488,7 +488,7 @@ pg_get_process_memory_contexts(PG_FUNCTION_ARGS)
 	 * every call to this function. The memory is freed at the end of the
 	 * function.
 	 */
-	/entry->memstats_dsa_pointer =
+	entry->memstats_dsa_pointer =
 		dsa_allocate0(MemoryStatsDsaArea, MEMORY_CONTEXT_REPORT_MAX_PER_BACKEND);
 	entry->summary = summary;
 	dshash_release_lock(MemoryStatsDsHash, entry);
@@ -787,7 +787,7 @@ ProcessGetMemoryContextInterrupt(void)
 	 * process specific memory. Two different processes publishing statistics
 	 * do not block each other.
 	 */
-	/entry->proc_id = MyProcPid;
+	entry->proc_id = MyProcPid;
 
 	/* Should be allocated by a client backend that is requesting statistics */
 	Assert(entry->memstats_dsa_pointer != InvalidDsaPointer);
