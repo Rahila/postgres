@@ -633,6 +633,7 @@ memstats_dsa_cleanup(MemoryStatsDSHashEntry *entry)
 	dsa_free(MemoryStatsDsaArea, entry->memstats_dsa_pointer);
 	entry->memstats_dsa_pointer = InvalidDsaPointer;
 	entry->stats_written = false;
+	entry->server_id = 0;
 }
 void
 MemoryContextKeysShmemInit(void)
