@@ -493,136 +493,144 @@ pg_get_process_memory_contexts(PG_FUNCTION_ARGS)
 	entry->summary = summary;
 	entry->server_id = pid;
 	dshash_release_lock(MemoryStatsDsHash, entry);
-
-	/*
-	 * Send a signal to a PostgreSQL process, informing it we want it to
-	 * produce information about its memory contexts.
-	 */
-	if (SendProcSignal(pid, PROCSIG_GET_MEMORY_CONTEXT, procNumber) < 0)
+	
+	PG_TRY();
 	{
-		ereport(WARNING,
-				errmsg("could not send signal to process %d: %m", pid));
-		PG_RETURN_NULL();
-	}
-
-	while (1)
-	{
-
-		entry = dshash_find_or_insert(MemoryStatsDsHash, key, &found);
-		Assert(found);
-
 		/*
-		 * We expect to come out of sleep when the requested process has
-		 * finished publishing the statistics, verified using a boolean
-		 * stats_written.
-		 */
-		if (entry->stats_written)
-			break;
-
-		dshash_release_lock(MemoryStatsDsHash, entry);
-
-		/*
-		 * Recheck the state of the backend before sleeping on the condition
-		 * variable to ensure the process is still alive.  Only check the
-		 * relevant process type based on the earlier PID check.
-		 */
-		if (proc_is_aux)
-			proc = AuxiliaryPidGetProc(pid);
-		else
-			proc = BackendPidGetProc(pid);
-
-		/*
-		 * The process ending during memory context processing is not an
-		 * error.
-		 */
-		if (proc == NULL)
+	 	 * Send a signal to a PostgreSQL process, informing it we want it to
+	 	 * produce information about its memory contexts.
+	 	 */
+		if (SendProcSignal(pid, PROCSIG_GET_MEMORY_CONTEXT, procNumber) < 0)
 		{
 			ereport(WARNING,
-					errmsg("PID %d is no longer a PostgreSQL server process",
-						   pid));
-			memstats_dsa_cleanup(entry);
+				errmsg("could not send signal to process %d: %m", pid));
 			PG_RETURN_NULL();
 		}
 
+		while (1)
+		{
+			entry = dshash_find_or_insert(MemoryStatsDsHash, key, &found);
+			Assert(found);
+
+			/*
+		 	 * We expect to come out of sleep when the requested process has
+		 	 * finished publishing the statistics, verified using a boolean
+		 	 * stats_written.
+		 	 */
+			if (entry->stats_written)
+				break;
+
+			dshash_release_lock(MemoryStatsDsHash, entry);
+
+			/*
+		 	 * Recheck the state of the backend before sleeping on the condition
+		 	 * variable to ensure the process is still alive.  Only check the
+		 	 * relevant process type based on the earlier PID check.
+		 	 */
+			if (proc_is_aux)
+				proc = AuxiliaryPidGetProc(pid);
+			else
+				proc = BackendPidGetProc(pid);
+
+			/*
+		 	 * The process ending during memory context processing is not an
+		 	 * error.
+		 	 */
+			if (proc == NULL)
+			{
+				ereport(WARNING,
+						errmsg("PID %d is no longer a PostgreSQL server process",
+							   pid));
+				memstats_dsa_cleanup(entry);
+				PG_RETURN_NULL();
+			}
+
+
+			/*
+		 	 * Wait for the timeout as defined by the user. If no statistics are
+		 	 * available within the allowed time then return NULL. The timer is
+		 	 * defined in milliseconds since that's what the condition variable
+		 	 * sleep uses.
+		 	 */
+			if (ConditionVariableTimedSleep(&entry->memcxt_cv,
+											(timeout * 1000), WAIT_EVENT_MEM_CXT_PUBLISH))
+			{
+				/* Timeout has expired, return NULL */
+				memstats_dsa_cleanup(entry);
+				PG_RETURN_NULL();
+			}
+		}
 
 		/*
-		 * Wait for the timeout as defined by the user. If no statistics are
-		 * available within the allowed time then return NULL. The timer is
-		 * defined in milliseconds since that's what the condition variable
-		 * sleep uses.
-		 */
-		if (ConditionVariableTimedSleep(&entry->memcxt_cv,
-										(timeout * 1000), WAIT_EVENT_MEM_CXT_PUBLISH))
-		{
-			/* Timeout has expired, return NULL */
-			memstats_dsa_cleanup(entry);
-			PG_RETURN_NULL();
-		}
-	}
-
-	/*
-	 * Backend has finished publishing the stats, project them.
-	 */
-	memcxt_info = (MemoryStatsEntry *)
-		dsa_get_address(MemoryStatsDsaArea, entry->memstats_dsa_pointer);
+	 	 * Backend has finished publishing the stats, project them.
+	 	 */
+		memcxt_info = (MemoryStatsEntry *)
+			dsa_get_address(MemoryStatsDsaArea, entry->memstats_dsa_pointer);
 
 #define PG_GET_PROCESS_MEMORY_CONTEXTS_COLS	11
-	for (int i = 0; i < entry->total_stats; i++)
-	{
-		ArrayType  *path_array;
-		int			path_length;
-		Datum		values[PG_GET_PROCESS_MEMORY_CONTEXTS_COLS];
-		bool		nulls[PG_GET_PROCESS_MEMORY_CONTEXTS_COLS];
-		Datum	   *path_datum = NULL;
-
-		memset(values, 0, sizeof(values));
-		memset(nulls, 0, sizeof(nulls));
-
-		if (memcxt_info[i].name[0] != '\0')
+		for (int i = 0; i < entry->total_stats; i++)
 		{
-			values[0] = CStringGetTextDatum(memcxt_info[i].name);
+			ArrayType  *path_array;
+			int			path_length;
+			Datum		values[PG_GET_PROCESS_MEMORY_CONTEXTS_COLS];
+			bool		nulls[PG_GET_PROCESS_MEMORY_CONTEXTS_COLS];
+			Datum	   *path_datum = NULL;
+
+			memset(values, 0, sizeof(values));
+			memset(nulls, 0, sizeof(nulls));
+
+			if (memcxt_info[i].name[0] != '\0')
+			{
+				values[0] = CStringGetTextDatum(memcxt_info[i].name);
+			}
+			else
+				nulls[0] = true;
+
+			if (memcxt_info[i].ident[0] != '\0')
+			{
+				values[1] = CStringGetTextDatum(memcxt_info[i].ident);
+			}
+			else
+				nulls[1] = true;
+
+			values[2] = CStringGetTextDatum(ContextTypeToString(memcxt_info[i].type));
+
+			path_length = memcxt_info[i].path_length;
+			path_datum = (Datum *) palloc(path_length * sizeof(Datum));
+			if (memcxt_info[i].path[0] != 0)
+			{
+				for (int j = 0; j < path_length; j++)
+					path_datum[j] = Int32GetDatum(memcxt_info[i].path[j]);
+				path_array = construct_array_builtin(path_datum, path_length, INT4OID);
+				values[3] = PointerGetDatum(path_array);
+			}
+			else
+				nulls[3] = true;
+
+			values[4] = Int32GetDatum(memcxt_info[i].levels);
+			values[5] = Int64GetDatum(memcxt_info[i].totalspace);
+			values[6] = Int64GetDatum(memcxt_info[i].nblocks);
+			values[7] = Int64GetDatum(memcxt_info[i].freespace);
+			values[8] = Int64GetDatum(memcxt_info[i].freechunks);
+			values[9] = Int64GetDatum(memcxt_info[i].totalspace -
+									  memcxt_info[i].freespace);
+			values[10] = Int32GetDatum(memcxt_info[i].num_agg_stats);
+
+			tuplestore_putvalues(rsinfo->setResult, rsinfo->setDesc,
+								 values, nulls);
 		}
-		else
-			nulls[0] = true;
+		memstats_dsa_cleanup(entry);
+		dshash_release_lock(MemoryStatsDsHash, entry);
 
-		if (memcxt_info[i].ident[0] != '\0')
-		{
-			values[1] = CStringGetTextDatum(memcxt_info[i].ident);
-		}
-		else
-			nulls[1] = true;
+		ConditionVariableCancelSleep();
 
-		values[2] = CStringGetTextDatum(ContextTypeToString(memcxt_info[i].type));
-
-		path_length = memcxt_info[i].path_length;
-		path_datum = (Datum *) palloc(path_length * sizeof(Datum));
-		if (memcxt_info[i].path[0] != 0)
-		{
-			for (int j = 0; j < path_length; j++)
-				path_datum[j] = Int32GetDatum(memcxt_info[i].path[j]);
-			path_array = construct_array_builtin(path_datum, path_length, INT4OID);
-			values[3] = PointerGetDatum(path_array);
-		}
-		else
-			nulls[3] = true;
-
-		values[4] = Int32GetDatum(memcxt_info[i].levels);
-		values[5] = Int64GetDatum(memcxt_info[i].totalspace);
-		values[6] = Int64GetDatum(memcxt_info[i].nblocks);
-		values[7] = Int64GetDatum(memcxt_info[i].freespace);
-		values[8] = Int64GetDatum(memcxt_info[i].freechunks);
-		values[9] = Int64GetDatum(memcxt_info[i].totalspace -
-								  memcxt_info[i].freespace);
-		values[10] = Int32GetDatum(memcxt_info[i].num_agg_stats);
-
-		tuplestore_putvalues(rsinfo->setResult, rsinfo->setDesc,
-							 values, nulls);
 	}
-	memstats_dsa_cleanup(entry);
-	dshash_release_lock(MemoryStatsDsHash, entry);
-
-	ConditionVariableCancelSleep();
-
+	PG_CATCH();
+	{
+		memstats_dsa_cleanup(entry);
+	}
+	PG_END_TRY();
+	
 	PG_RETURN_NULL();
 }
 
@@ -1095,4 +1103,7 @@ AtProcExit_memstats_cleanup(int code, Datum arg)
 		}
 		dshash_delete_entry(MemoryStatsDsHash, entry);
 	}
+	LWLockAcquire(client_keys_lock, LW_EXCLUSIVE);
+	client_keys[idx] = -1;
+	LWLockRelease(client_keys_lock);
 }
