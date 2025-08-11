@@ -491,6 +491,7 @@ pg_get_process_memory_contexts(PG_FUNCTION_ARGS)
 	entry->memstats_dsa_pointer =
 		dsa_allocate0(MemoryStatsDsaArea, MEMORY_CONTEXT_REPORT_MAX_PER_BACKEND);
 	entry->summary = summary;
+	entry->server_id = pid;
 	dshash_release_lock(MemoryStatsDsHash, entry);
 
 	/*
@@ -512,15 +513,10 @@ pg_get_process_memory_contexts(PG_FUNCTION_ARGS)
 
 		/*
 		 * We expect to come out of sleep when the requested process has
-		 * finished publishing the statistics, verified using the correct
-		 * entry in the proc_id field.
-		 *
-		 * Make sure that the information belongs to pid we requested
-		 * information for, Otherwise loop back and wait for the server
-		 * process to finish publishing statistics.
-		 *
+		 * finished publishing the statistics, verified using a boolean
+		 * stats_written.
 		 */
-		if (entry->proc_id == pid)
+		if (entry->stats_written)
 			break;
 
 		dshash_release_lock(MemoryStatsDsHash, entry);
@@ -636,7 +632,7 @@ memstats_dsa_cleanup(MemoryStatsDSHashEntry *entry)
 	Assert(MemoryStatsDsaArea != NULL);
 	dsa_free(MemoryStatsDsaArea, entry->memstats_dsa_pointer);
 	entry->memstats_dsa_pointer = InvalidDsaPointer;
-	entry->proc_id = 0;
+	entry->stats_written = false;
 }
 void
 MemoryContextKeysShmemInit(void)
@@ -772,22 +768,26 @@ ProcessGetMemoryContextInterrupt(void)
 	Assert(client_keys[MyProcNumber] != -1);
 	clientProcNumber = client_keys[MyProcNumber];
 	LWLockRelease(client_keys_lock);
-	
+
 	snprintf(key, CLIENT_KEY_SIZE, "%d", clientProcNumber);
-
 	elog(LOG, "Server pid %d, Server proc no %d", MyProcPid, MyProcNumber);
-	entry = dshash_find_or_insert(MemoryStatsDsHash, key, &found);
-	/* Entry has been deleted due to client process exit */
-	if (!found)
-		return;
-	summary = entry->summary;
-
+	
 	/*
 	 * The entry lock is held by dshash_find_or_insert to protect writes to
 	 * process specific memory. Two different processes publishing statistics
 	 * do not block each other.
 	 */
-	entry->proc_id = MyProcPid;
+	entry = dshash_find_or_insert(MemoryStatsDsHash, key, &found);
+
+	/* Entry has been deleted due to client process exit */
+	if (!found)
+		return;
+
+	/* The client has timed out waiting for us to write statistics */
+	if (entry->server_id != MyProcPid)
+		return;
+
+	summary = entry->summary;
 
 	/* Should be allocated by a client backend that is requesting statistics */
 	Assert(entry->memstats_dsa_pointer != InvalidDsaPointer);
@@ -935,7 +935,7 @@ ProcessGetMemoryContextInterrupt(void)
 		 */
 		entry->total_stats = num_individual_stats + 1;
 	}
-
+	entry->stats_written = true;
 	/* Notify waiting backends and return */
 	end_memorycontext_reporting(entry, oldcontext, context_id_lookup);
 }

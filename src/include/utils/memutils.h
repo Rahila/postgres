@@ -363,7 +363,8 @@ typedef struct MemoryStatsDSHashEntry
 {
 	char		key[64];
 	ConditionVariable memcxt_cv;
-	int			proc_id;
+	bool			stats_written;
+	int			server_id;
 	int			total_stats;
 	bool		summary;
 	dsa_pointer memstats_dsa_pointer;
