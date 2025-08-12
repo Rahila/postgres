@@ -790,11 +790,17 @@ ProcessGetMemoryContextInterrupt(void)
 
 	/* Entry has been deleted due to client process exit */
 	if (!found)
+	{
+		end_memorycontext_reporting(entry, oldcontext, context_id_lookup);
 		return;
+	}
 
 	/* The client has timed out waiting for us to write statistics */
 	if (entry->server_id != MyProcPid)
+	{
+		end_memorycontext_reporting(entry, oldcontext, context_id_lookup);
 		return;
+	}
 
 	summary = entry->summary;
 
