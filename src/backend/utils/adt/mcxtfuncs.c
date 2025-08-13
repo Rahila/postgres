@@ -481,7 +481,10 @@ pg_get_process_memory_contexts(PG_FUNCTION_ARGS)
 	 */
 	entry = dshash_find_or_insert(MemoryStatsDsHash, key, &found);
 	if (!found)
+	{
+		entry->stats_written = false;
 		ConditionVariableInit(&entry->memcxt_cv);
+	}
 
 	/*
 	 * Allocate 1MB of memory for the backend to publish its statistics on
@@ -620,6 +623,7 @@ pg_get_process_memory_contexts(PG_FUNCTION_ARGS)
 								 values, nulls);
 		}
 		memstats_dsa_cleanup(entry);
+		/* XXX include the following in the PG_CATCH() block? */
 		dshash_release_lock(MemoryStatsDsHash, entry);
 
 		ConditionVariableCancelSleep();
@@ -628,6 +632,10 @@ pg_get_process_memory_contexts(PG_FUNCTION_ARGS)
 	PG_CATCH();
 	{
 		memstats_dsa_cleanup(entry);
+		/* XXX include the following in the PG_CATCH() block? */
+		dshash_release_lock(MemoryStatsDsHash, entry);
+
+		ConditionVariableCancelSleep();
 	}
 	PG_END_TRY();
 	
@@ -798,6 +806,7 @@ ProcessGetMemoryContextInterrupt(void)
 	/* The client has timed out waiting for us to write statistics */
 	if (entry->server_id != MyProcPid)
 	{
+		entry->stats_written = false;
 		end_memorycontext_reporting(entry, oldcontext, context_id_lookup);
 		return;
 	}
@@ -951,8 +960,9 @@ ProcessGetMemoryContextInterrupt(void)
 		entry->total_stats = num_individual_stats + 1;
 	}
 	entry->stats_written = true;
-	/* Notify waiting backends and return */
 	end_memorycontext_reporting(entry, oldcontext, context_id_lookup);
+	/* Notify waiting backends and return */
+	ConditionVariableBroadcast(&entry->memcxt_cv);
 }
 
 /*
@@ -965,7 +975,6 @@ end_memorycontext_reporting(MemoryStatsDSHashEntry *entry, MemoryContext oldcont
 	MemoryContext curr_ctx = CurrentMemoryContext;
 
 	dshash_release_lock(MemoryStatsDsHash, entry);
-	ConditionVariableBroadcast(&entry->memcxt_cv);
 
 	/*
 	 * Empty this processes slot, so other clients can request memory
