@@ -1010,10 +1010,10 @@ XLogWalRcvFlush(bool dying, TimeLineID tli)
 	
 		/* Update shared-memory status */
 		SpinLockAcquire(&walrcv->mutex);
-		if (walrcv->flushedUpto < LogstreamResult.Flush)
+		if (walrcv->flushedUpto < LogstreamResult.SenderFlush)
 		{
 			walrcv->latestChunkStart = walrcv->flushedUpto;
-			walrcv->flushedUpto = LogstreamResult.Flush;
+			walrcv->flushedUpto = LogstreamResult.SenderFlush;
 			walrcv->receivedTLI = tli;
 		}
 		SpinLockRelease(&walrcv->mutex);

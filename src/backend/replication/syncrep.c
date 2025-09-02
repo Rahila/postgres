@@ -552,7 +552,6 @@ SyncRepReleaseWaiters(void)
 	{
 		walsndctl->lsn[SYNC_REP_WAIT_WRITE] = writePtr;
 		numwrite = SyncRepWakeQueue(false, SYNC_REP_WAIT_WRITE);
-		elog(LOG, "Wake up backends for writePtr %X/%08X",  LSN_FORMAT_ARGS(writePtr));
 	}
 	if (walsndctl->lsn[SYNC_REP_WAIT_FLUSH] < flushPtr)
 	{
@@ -567,7 +566,7 @@ SyncRepReleaseWaiters(void)
 
 	LWLockRelease(SyncRepLock);
 
-	elog(DEBUG3, "released %d procs up to write %X/%08X, %d procs up to flush %X/%08X, %d procs up to apply %X/%08X",
+	elog(LOG, "released %d procs up to write %X/%08X, %d procs up to flush %X/%08X, %d procs up to apply %X/%08X",
 		 numwrite, LSN_FORMAT_ARGS(writePtr),
 		 numflush, LSN_FORMAT_ARGS(flushPtr),
 		 numapply, LSN_FORMAT_ARGS(applyPtr));
