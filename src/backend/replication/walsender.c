@@ -3449,7 +3449,7 @@ retry:
 		startptr += rbytes;
 		nbytes -= rbytes;
 		nbytesUntilFlush -= rbytes;
-		elog(LOG, "Bytes sent from buffer %llu", rbytes);
+		//elog(LOG, "Bytes sent from buffer %llu", rbytes);
 	}
 	if (nbytesUntilFlush > 0)
 	{
@@ -3464,9 +3464,9 @@ retry:
 			WALReadRaiseError(&errinfo);
 		output_message.len += nbytesUntilFlush;
 		startptr += nbytesUntilFlush;
-		elog(LOG, "Bytes sent from file %llu", nbytesUntilFlush);
+	//	elog(LOG, "Bytes sent from file %llu", nbytesUntilFlush);
 		nbytes -= nbytesUntilFlush;
-		elog(LOG, "Nbytes until flush at the end %lu", nbytesUntilFlush);
+	//	elog(LOG, "Nbytes until flush at the end %lu", nbytesUntilFlush);
 	}
 	/*
 	 * Any WAL further than the latest flush position cannot be found on disk,
@@ -3480,17 +3480,17 @@ retry:
 		output_message.len += rbytes;
 		startptr += rbytes;
 		nbytesAfterFlush -= rbytes;
-		elog(LOG, "Bytes sent from buffer %llu", rbytes);
-		elog(LOG, "Nbytes after flush at the end %lu", nbytesAfterFlush);
+	//	elog(LOG, "Bytes sent from buffer %llu", rbytes);
+	//	elog(LOG, "Nbytes after flush at the end %lu", nbytesAfterFlush);
        }
 	/*
 	if (nbytesAfterFlush > 0)
 	{
-		if (!WALRead(xlogreader,
+	:	if (!WALRead(xlogreader,
 				 &output_message.data[output_message.len],
 				 startptr,
 				 nbytesAfterFlush,
-				 xlogreader->seg.ws_tli,	/* Pass the current TLI because
+				 xlogreader->seg.ws_tli,	 Pass the current TLI because
 											 * only WalSndSegmentOpen controls
 											 * whether new TLI is needed. */
 			//	 &errinfo))

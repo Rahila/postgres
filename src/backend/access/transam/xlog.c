@@ -2162,7 +2162,7 @@ AdvanceXLInsertBuffer(XLogRecPtr upto, TimeLineID tli, bool opportunistic)
 			 npages, LSN_FORMAT_ARGS(NewPageEndPtr));
 	}
 #endif
-	elog(LOG, "WAL buffer initialized upto %u, cache block %u", &XLogCtl->InitializedUpTo, &XLogCtl->XLogCacheBlck);
+//	elog(LOG, "WAL buffer initialized upto %u, cache block %u", &XLogCtl->InitializedUpTo, &XLogCtl->XLogCacheBlck);
 }
 
 /*
