@@ -3737,7 +3737,7 @@ CheckXLogRemoved(XLogSegNo segno, TimeLineID tli)
 
 		XLogFileName(filename, tli, segno, wal_segment_size);
 		errno = save_errno;
-		ereport(PANIC,
+		ereport(ERROR,
 				(errcode_for_file_access(),
 				 errmsg("requested WAL segment %s has already been removed",
 						filename)));

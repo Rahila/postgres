@@ -3150,7 +3150,7 @@ WalSndSegmentOpen(XLogReaderState *state, XLogSegNo nextSegNo,
 
 		XLogFileName(xlogfname, *tli_p, nextSegNo, wal_segment_size);
 		errno = save_errno;
-		ereport(PANIC,
+		ereport(ERROR,
 				(errcode_for_file_access(),
 				 errmsg("requested WAL segment %s has already been removed",
 						xlogfname)));
