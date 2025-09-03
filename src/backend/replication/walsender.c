@@ -3292,10 +3292,10 @@ XLogSendPhysical(void)
 			elog(LOG, "Entered here!!");
 			SendRqstPtr = WaitXLogInsertionsToFinish(sentPtr);
 		}
-/*		else
+		else
 		{
 			SendRqstPtr = WaitXLogInsertionsToFinish(SendRqstPtr);
-		}*/
+		}
 	}
 
 	/*
