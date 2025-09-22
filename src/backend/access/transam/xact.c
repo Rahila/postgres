@@ -51,6 +51,7 @@
 #include "replication/origin.h"
 #include "replication/snapbuild.h"
 #include "replication/syncrep.h"
+#include "replication/walsender.h"
 #include "storage/aio_subsys.h"
 #include "storage/condition_variable.h"
 #include "storage/fd.h"
@@ -1327,6 +1328,7 @@ RecordTransactionCommit(void)
 	SharedInvalidationMessage *invalMessages = NULL;
 	bool		RelcacheInitFileInval = false;
 	bool		wrote_xlog;
+	XLogRecPtr sentPtr;
 
 	/*
 	 * Log pending invalidations for logical decoding of in-progress
@@ -1565,6 +1567,8 @@ RecordTransactionCommit(void)
 	 * Note that at this stage we have marked clog, but still show as running
 	 * in the procarray and continue to hold locks.
 	 */
+	sentPtr = pg_get_wal_sent_lsn();
+	elog(LOG, "Last record pointer %X/%08X , Sent LSN for wait for sync %X/%08X", LSN_FORMAT_ARGS(XactLastRecEnd), LSN_FORMAT_ARGS(sentPtr));
 	if (wrote_xlog && markXidCommitted)
 		SyncRepWaitForLSN(XactLastRecEnd, true);
 

@@ -148,6 +148,8 @@ void
 SyncRepWaitForLSN(XLogRecPtr lsn, bool commit)
 {
 	int			mode;
+	TimestampTz start_ts;
+	long delay = 0;
 
 	/*
 	 * This should be called while holding interrupts during a transaction
@@ -210,6 +212,7 @@ SyncRepWaitForLSN(XLogRecPtr lsn, bool commit)
 			lsn <= WalSndCtl->lsn[mode])
 		{
 			LWLockRelease(SyncRepLock);
+			elog(LOG, "Delay sync commit %ld", delay);
 			return;
 		}
 	}
@@ -222,6 +225,7 @@ SyncRepWaitForLSN(XLogRecPtr lsn, bool commit)
 		 * LSN.
 		 */
 		LWLockRelease(SyncRepLock);
+		elog(LOG, "Delay sync commit %ld", delay);
 		return;
 	}
 	else if (!SyncStandbysDefined())
@@ -268,6 +272,7 @@ SyncRepWaitForLSN(XLogRecPtr lsn, bool commit)
 	 * Each proc has its own wait latch, so we perform a normal latch
 	 * check/wait loop here.
 	 */
+	start_ts = GetCurrentTimestamp();
 	for (;;)
 	{
 		int			rc;
@@ -343,6 +348,9 @@ SyncRepWaitForLSN(XLogRecPtr lsn, bool commit)
 			break;
 		}
 	}
+
+	delay = TimestampDifferenceMilliseconds(start_ts, GetCurrentTimestamp());
+	elog(LOG, "Delay sync commit %ld", delay);
 
 	/*
 	 * WalSender has checked our LSN and has removed us from queue. Clean up

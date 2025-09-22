@@ -1281,12 +1281,12 @@ ProcessWalSndrMessage(XLogRecPtr walEnd, TimestampTz sendTime)
 
 		/* apply delay is not available */
 		if (applyDelay == -1)
-			elog(DEBUG2, "sendtime %s receipttime %s replication apply delay (N/A) transfer latency %d ms",
+			elog(LOG, "sendtime %s receipttime %s replication apply delay (N/A) transfer latency %d ms",
 				 sendtime,
 				 receipttime,
 				 GetReplicationTransferLatency());
 		else
-			elog(DEBUG2, "sendtime %s receipttime %s replication apply delay %d ms transfer latency %d ms",
+			elog(LOG, "sendtime %s receipttime %s replication apply delay %d ms transfer latency %d ms",
 				 sendtime,
 				 receipttime,
 				 applyDelay,

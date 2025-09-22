@@ -48,6 +48,7 @@ extern void WalSndInitStopping(void);
 extern void WalSndWaitStopping(void);
 extern void HandleWalSndInitStopping(void);
 extern void WalSndRqstFileReload(void);
+extern XLogRecPtr pg_get_wal_sent_lsn(void);
 
 /*
  * Remember that we want to wakeup walsenders later

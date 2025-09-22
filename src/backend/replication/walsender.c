@@ -4366,3 +4366,11 @@ LagTrackerRead(int head, XLogRecPtr lsn, TimestampTz now)
 	Assert(time != 0);
 	return now - time;
 }
+
+XLogRecPtr
+pg_get_wal_sent_lsn()
+{
+	WalSnd     *walsnd = &WalSndCtl->walsnds[0];
+
+	return walsnd->sentPtr;
+}

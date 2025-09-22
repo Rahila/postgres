@@ -2483,6 +2483,7 @@ XLogWrite(XLogwrtRqst WriteRqst, TimeLineID tli, bool flexible)
 
 				LogwrtResult.Flush = LogwrtResult.Write;	/* end of page */
 
+				//elog(LOG, "WAL flushed upto %X/%X", LSN_FORMAT_ARGS(LogwrtResult.Flush));
 				if (XLogArchivingActive())
 					XLogArchiveNotifySeg(openLogSegNo, tli);
 
@@ -2554,6 +2555,7 @@ XLogWrite(XLogwrtRqst WriteRqst, TimeLineID tli, bool flexible)
 		WalSndWakeupRequest();
 
 		LogwrtResult.Flush = LogwrtResult.Write;
+	//	elog(LOG, "WAL flushed upto %X/%X", LSN_FORMAT_ARGS(LogwrtResult.Flush));
 	}
 
 	/*
@@ -2803,9 +2805,9 @@ XLogFlush(XLogRecPtr record)
 #ifdef WAL_DEBUG
 	if (XLOG_DEBUG)
 		elog(LOG, "xlog flush request %X/%08X; write %X/%08X; flush %X/%08X",
-			 LSN_FORMAT_ARGS(record),
-			 LSN_FORMAT_ARGS(LogwrtResult.Write),
-			 LSN_FORMAT_ARGS(LogwrtResult.Flush));
+			 	LSN_FORMAT_ARGS(record),
+			 	LSN_FORMAT_ARGS(LogwrtResult.Write),
+			 	LSN_FORMAT_ARGS(LogwrtResult.Flush));
 #endif
 
 	START_CRIT_SECTION();
@@ -2900,6 +2902,7 @@ XLogFlush(XLogRecPtr record)
 		WriteRqst.Write = insertpos;
 		WriteRqst.Flush = insertpos;
 
+	
 		XLogWrite(WriteRqst, insertTLI, false);
 
 		LWLockRelease(WALWriteLock);
