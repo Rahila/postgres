@@ -3472,6 +3472,7 @@ retry:
 				 LSN_FORMAT_ARGS(sentPtr));
 		set_ps_display(activitymsg);
 	}
+	elog(LOG, "Size of data sent %d", output_message.len);
 }
 
 /*
