@@ -3352,8 +3352,7 @@ XLogSendPhysical(void)
 
 	/* Do we have any work to do? */
 	Assert(sentPtr <= SendRqstPtr);
-	if (MyWalSnd->flush >= flushPtr &&
-		SendRqstPtr <= sentPtr)
+	if (SendRqstPtr <= sentPtr)
 	{
 		WalSndCaughtUp = true;
 		return;
@@ -3380,7 +3379,7 @@ XLogSendPhysical(void)
 		endptr = SendRqstPtr;
 		if (sendTimeLineIsHistoric)
 			WalSndCaughtUp = false;
-		else if (MyWalSnd->flush >= flushPtr)
+		else
 			WalSndCaughtUp = true;
 	}
 	else
