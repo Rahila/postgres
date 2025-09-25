@@ -922,7 +922,7 @@ XLogInsertRecord(XLogRecData *rdata,
 							class == WALINSERT_SPECIAL_SWITCH, rdata,
 							StartPos, EndPos, insertTLI);
 
-		if (StartPos - StartPos % XLOG_BLCKSZ + XLOG_BLCKSZ < EndPos)
+		if (StartPos - StartPos % XLOG_BLCKSZ + XLOG_BLCKSZ/2 < EndPos)
 			WalSndWakeupRequest();
 
 		/*
