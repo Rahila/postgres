@@ -54,6 +54,7 @@
 #include "access/htup_details.h"
 #include "access/timeline.h"
 #include "access/transam.h"
+#include "access/xlog.h"
 #include "access/xlog_internal.h"
 #include "access/xlogarchive.h"
 #include "access/xlogrecovery.h"
@@ -139,7 +140,7 @@ static void WalRcvWaitForStartPosition(XLogRecPtr *startpoint, TimeLineID *start
 static void WalRcvDie(int code, Datum arg);
 static void XLogWalRcvProcessMsg(unsigned char type, char *buf, Size len,
 								 TimeLineID tli);
-static void XLogWalRcvWrite(char *buf, Size nbytes, XLogRecPtr recptr, XLogRecPtr flushedupto,
+static void XLogWalRcvWrite(char *buf, Size nbytes, XLogRecPtr recptr,
 							TimeLineID tli);
 static void XLogWalRcvFlush(bool dying, TimeLineID tli);
 static void XLogWalRcvClose(XLogRecPtr recptr, TimeLineID tli);
@@ -147,7 +148,6 @@ static void XLogWalRcvSendReply(bool force, bool requestReply);
 static void XLogWalRcvSendHSFeedback(bool immed);
 static void ProcessWalSndrMessage(XLogRecPtr walEnd, TimestampTz sendTime);
 static void WalRcvComputeNextWakeup(WalRcvWakeupReason reason, TimestampTz now);
-
 
 /* Main entry point for walreceiver process */
 void
@@ -845,7 +845,10 @@ XLogWalRcvProcessMsg(unsigned char type, char *buf, Size len, TimeLineID tli)
 		case PqReplMsg_WALData:
 			{
 				StringInfoData incoming_message;
-
+				StringInfoData write_buf;
+				int bytes_unflushed, nbytes = 0;
+				XLogRecPtr writeendptr;
+	
 				hdrlen = sizeof(int64) + sizeof(int64) + sizeof(int64) + sizeof(int64);
 				if (len < hdrlen)
 					ereport(ERROR,
@@ -854,6 +857,7 @@ XLogWalRcvProcessMsg(unsigned char type, char *buf, Size len, TimeLineID tli)
 
 				/* initialize a StringInfo with the given buffer */
 				initReadOnlyStringInfo(&incoming_message, buf, hdrlen);
+				initStringInfo(&write_buf);
 
 				/* read the fields */
 				dataStart = pq_getmsgint64(&incoming_message);
@@ -864,7 +868,24 @@ XLogWalRcvProcessMsg(unsigned char type, char *buf, Size len, TimeLineID tli)
 
 				buf += hdrlen;
 				len -= hdrlen;
-				XLogWalRcvWrite(buf, len, dataStart, flushedWal, tli);
+//				elog(LOG, "Data start Buffer %X/%08X, len %ld, flushedWAL %X/%08X", LSN_FORMAT_ARGS(dataStart), len, LSN_FORMAT_ARGS(flushedWal));
+//				elog(LOG, "Difference between flushed WAL and write stream %ld",  LogstreamResult.Write - flushedWal);
+				LogstreamResult.SenderFlush = flushedWal;
+				InsertXLogToWalBuffers(buf, dataStart, len, LogstreamResult.Write);
+				writeendptr = (dataStart + len) > flushedWal ? flushedWal : (dataStart + len);
+//				elog(LOG, "Difference between flushed WAL and data stream end %ld",  (dataStart + len) - flushedWal);
+
+				if (writeendptr > LogstreamResult.Write)
+				{
+					bytes_unflushed = writeendptr - LogstreamResult.Write;
+//					elog(LOG, "writeendptr %X/%08X, LogstreamResultWrite %X/%08X, bytes to be flushed %d", LSN_FORMAT_ARGS(writeendptr), LSN_FORMAT_ARGS(LogstreamResult.Write), bytes_unflushed);
+					enlargeStringInfo(&write_buf, bytes_unflushed);
+					nbytes = WALReadFromBufferRcv(write_buf.data, LogstreamResult.Write,
+												  bytes_unflushed);
+//					elog(LOG, "Data start File %X/%08X, len %d", LSN_FORMAT_ARGS(LogstreamResult.Write), nbytes);
+					Assert(nbytes == bytes_unflushed);
+					XLogWalRcvWrite(write_buf.data, nbytes, LogstreamResult.Write, tli);
+				} 
 				break;
 			}
 		case PqReplMsg_Keepalive:
@@ -904,7 +925,7 @@ XLogWalRcvProcessMsg(unsigned char type, char *buf, Size len, TimeLineID tli)
  * Write XLOG data to disk.
  */
 static void
-XLogWalRcvWrite(char *buf, Size nbytes, XLogRecPtr recptr, XLogRecPtr flushedupto, TimeLineID tli)
+XLogWalRcvWrite(char *buf, Size nbytes, XLogRecPtr recptr, TimeLineID tli)
 {
 	int			startoff;
 	int			byteswritten;
@@ -977,7 +998,6 @@ XLogWalRcvWrite(char *buf, Size nbytes, XLogRecPtr recptr, XLogRecPtr flushedupt
 		buf += byteswritten;
 
 		LogstreamResult.Write = recptr;
-		LogstreamResult.SenderFlush = flushedupto;
 	}
 
 	/* Update shared-memory status */
@@ -1019,25 +1039,20 @@ XLogWalRcvFlush(bool dying, TimeLineID tli)
 	 * primary may get flushed on standby but those WAL won't be applied on
 	 * standby until they are flushed on primary.
 	 */
-	if ((LogstreamResult.Flush < LogstreamResult.Write) &&
-		(LogstreamResult.Flush < LogstreamResult.SenderFlush))
+	if (LogstreamResult.Flush < LogstreamResult.Write)
 	{
 		WalRcvData *walrcv = WalRcv;
-		XLogRecPtr	flush_ptr;
 
 		issue_xlog_fsync(recvFile, recvSegNo, tli);
 
 		LogstreamResult.Flush = LogstreamResult.Write;
 
-		flush_ptr = LogstreamResult.Flush > LogstreamResult.SenderFlush ? LogstreamResult.SenderFlush :
-			LogstreamResult.Flush;
-
 		/* Update shared-memory status */
 		SpinLockAcquire(&walrcv->mutex);
-		if (walrcv->flushedUpto < flush_ptr)
+		if (walrcv->flushedUpto < LogstreamResult.Flush)
 		{
 			walrcv->latestChunkStart = walrcv->flushedUpto;
-			walrcv->flushedUpto = flush_ptr;
+			walrcv->flushedUpto = LogstreamResult.Flush;
 			walrcv->receivedTLI = tli;
 		}
 		SpinLockRelease(&walrcv->mutex);
@@ -1569,3 +1584,4 @@ pg_stat_get_wal_receiver(PG_FUNCTION_ARGS)
 	/* Returns the record as Datum */
 	PG_RETURN_DATUM(HeapTupleGetDatum(heap_form_tuple(tupdesc, values, nulls)));
 }
+

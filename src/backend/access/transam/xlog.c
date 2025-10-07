@@ -9693,3 +9693,186 @@ SetWalWriterSleeping(bool sleeping)
 	XLogCtl->WalWriterSleeping = sleeping;
 	SpinLockRelease(&XLogCtl->info_lck);
 }
+
+void
+InsertXLogToWalBuffers(char *buf, XLogRecPtr dataStart, Size len, XLogRecPtr writePtr)
+{
+	char *page;
+	XLogRecPtr curpos = dataStart;
+
+	while (len > 0)
+	{
+		Size nwrite;
+
+		page = GetWalLogBuffer(curpos, writePtr);
+
+		/*  Write into the curent page as much as possible */
+		nwrite = Min(len, XLOG_BLCKSZ - (curpos % XLOG_BLCKSZ));
+
+		memcpy(page, buf, nwrite);
+		curpos += nwrite;
+		buf += nwrite;
+		len -= nwrite;
+	 }
+//	elog(LOG, "Buffer end wal %X/%08X, length(should be 0) %ld, writePtr, unflushed WAL %ld", LSN_FORMAT_ARGS(curpos), len, writePtr, curpos - writePtr);
+	return;
+}
+
+char *
+GetWalLogBuffer(XLogRecPtr currpos, XLogRecPtr writePtr)
+{
+	static uint64 cachedPage = 0;
+	static char *cachedPos = NULL;
+	XLogRecPtr  endptr;
+	XLogRecPtr  expectedEndPtr;
+	char *NewPage;
+	int idx;
+
+	/*
+     * Fast path for the common case that we need to access again the same
+	 * page as last time.
+	 */
+	if (currpos / XLOG_BLCKSZ == cachedPage)
+	{
+//		Assert(((XLogPageHeader) cachedPos)->xlp_magic == XLOG_PAGE_MAGIC);
+//		Assert(((XLogPageHeader) cachedPos)->xlp_pageaddr == currpos - (currpos % XLOG_BLCKSZ));
+		return cachedPos + currpos % XLOG_BLCKSZ;
+	}
+
+	/*
+	 * The XLog buffer cache is organized so that a page is always loaded to a
+	 * particular buffer.  That way we can easily calculate the buffer a given
+	 * page must be loaded into, from the XLogRecPtr alone.
+	 */
+	idx = XLogRecPtrToBufIdx(currpos);
+
+	endptr = pg_atomic_read_u64(&XLogCtl->xlblocks[idx]);
+	expectedEndPtr = currpos;
+    expectedEndPtr += XLOG_BLCKSZ - currpos % XLOG_BLCKSZ; 
+
+	NewPage = XLogCtl->pages + idx * (Size) XLOG_BLCKSZ;
+	if (endptr == InvalidXLogRecPtr)
+	{
+		/*
+		 * It is a new page, so should be initialized, but do it
+		 * just to be sure. 
+		 */
+		MemSet(NewPage, 0, XLOG_BLCKSZ);
+		
+		pg_atomic_write_u64(&XLogCtl->xlblocks[idx], expectedEndPtr);
+	}
+	else if (endptr != expectedEndPtr && endptr <= writePtr)
+	{
+		/* Old page, initialize buffer again */
+
+		/*
+		 * Be sure to re-zero the buffer so that bytes beyond what we've
+		 * written will look like zeroes and not valid XLOG records...
+		 */
+		MemSet(NewPage, 0, XLOG_BLCKSZ);
+		pg_atomic_write_u64(&XLogCtl->xlblocks[idx], expectedEndPtr);
+	}
+	else if (endptr != expectedEndPtr && endptr > writePtr)
+		elog(ERROR, "The write pointer is lagging");
+
+	/*
+	 * Found the buffer holding this page. Return a pointer to the right
+	 * offset within the page.
+	 */
+	cachedPage = currpos / XLOG_BLCKSZ;
+	cachedPos = NewPage;
+
+//	Assert(((XLogPageHeader) cachedPos)->xlp_magic == XLOG_PAGE_MAGIC);
+//	Assert(((XLogPageHeader) cachedPos)->xlp_pageaddr == currpos - (currpos % XLOG_BLCKSZ));
+
+	return cachedPos + currpos % XLOG_BLCKSZ;
+}
+
+Size
+WALReadFromBufferRcv(char *dstbuf, XLogRecPtr startptr, Size count)
+{
+	char	   *pdst = dstbuf;
+	XLogRecPtr	recptr = startptr;
+	Size		nbytes = count;
+
+	Assert(!XLogRecPtrIsInvalid(startptr));
+
+	/*
+	 * Loop through the buffers without a lock. For each buffer, atomically
+	 * read and verify the end pointer, then copy the data out, and finally
+	 * re-read and re-verify the end pointer.
+	 *
+	 * Once a page is evicted, it never returns to the WAL buffers, so if the
+	 * end pointer matches the expected end pointer before and after we copy
+	 * the data, then the right page must have been present during the data
+	 * copy. Read barriers are necessary to ensure that the data copy actually
+	 * happens between the two verification steps.
+	 *
+	 * If either verification fails, we simply terminate the loop and return
+	 * with the data that had been already copied out successfully.
+	 */
+	while (nbytes > 0)
+	{
+		uint32		offset = recptr % XLOG_BLCKSZ;
+		int			idx = XLogRecPtrToBufIdx(recptr);
+		XLogRecPtr	expectedEndPtr;
+		XLogRecPtr	endptr;
+		const char *page;
+		const char *psrc;
+		Size		npagebytes;
+
+		/*
+		 * Calculate the end pointer we expect in the xlblocks array if the
+		 * correct page is present.
+		 */
+		expectedEndPtr = recptr + (XLOG_BLCKSZ - offset);
+
+		/*
+		 * First verification step: check that the correct page is present in
+		 * the WAL buffers.
+		 */
+		endptr = pg_atomic_read_u64(&XLogCtl->xlblocks[idx]);
+	//	elog(LOG, "End pointer in buffer %X/%08X, expected end pointer %X/%08X, request ptr %X/%08X",
+	//		 LSN_FORMAT_ARGS(endptr), LSN_FORMAT_ARGS(expectedEndPtr), LSN_FORMAT_ARGS(recptr));
+		if (expectedEndPtr != endptr)
+			elog(ERROR, "Buffer block not present");
+
+		/*
+		 * The correct page is present (or was at the time the endptr was
+		 * read; must re-verify later). Calculate pointer to source data and
+		 * determine how much data to read from this page.
+		 */
+		page = XLogCtl->pages + idx * (Size) XLOG_BLCKSZ;
+		psrc = page + offset;
+		npagebytes = Min(nbytes, XLOG_BLCKSZ - offset);
+
+		/*
+		 * Ensure that the data copy and the first verification step are not
+		 * reordered.
+		 */
+		pg_read_barrier();
+
+		/* data copy */
+		memcpy(pdst, psrc, npagebytes);
+
+		/*
+		 * Ensure that the data copy and the second verification step are not
+		 * reordered.
+		 */
+		pg_read_barrier();
+
+		/*
+		 * Second verification step: check that the page we read from wasn't
+		 * evicted while we were copying the data.
+		 */
+		endptr = pg_atomic_read_u64(&XLogCtl->xlblocks[idx]);
+		if (expectedEndPtr != endptr)
+			break;
+
+		pdst += npagebytes;
+		recptr += npagebytes;
+		nbytes -= npagebytes;
+	}
+
+	return pdst - dstbuf;
+}

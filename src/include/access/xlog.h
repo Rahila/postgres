@@ -315,6 +315,9 @@ extern void do_pg_abort_backup(int code, Datum arg);
 extern void register_persistent_abort_backup_handler(void);
 extern SessionBackupState get_backup_status(void);
 extern XLogRecPtr WaitXLogInsertionsToFinish(XLogRecPtr upto);
+extern Size WALReadFromBufferRcv(char *dstbuf, XLogRecPtr startptr, Size count);
+extern char *GetWalLogBuffer(XLogRecPtr currpos, XLogRecPtr writePtr);
+extern void InsertXLogToWalBuffers(char *buf, XLogRecPtr dataStart, Size len, XLogRecPtr writePtr);
 
 /* File path names (all relative to $PGDATA) */
 #define RECOVERY_SIGNAL_FILE	"recovery.signal"
