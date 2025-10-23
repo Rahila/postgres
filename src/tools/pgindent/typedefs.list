@@ -1682,6 +1682,9 @@ MemoryContextData
 MemoryContextId
 MemoryContextMethodID
 MemoryContextMethods
+MemoryStatsContextId
+MemoryStatsEntry
+MemoryStatsDSHashEntry
 MemoryStatsPrintFunc
 MergeAction
 MergeActionState

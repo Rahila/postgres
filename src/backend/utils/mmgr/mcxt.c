@@ -1008,6 +1008,35 @@ MemoryContextStatsInternal(MemoryContext context, int level,
 	}
 }
 
+
+/*
+ * MemoryContextStatsCounter
+ *
+ * Accumulate statistics counts into *totals. totals should not be NULL.
+ * This involves a non-recursive tree traversal.
+ */
+void
+MemoryContextStatsCounter(MemoryContext context, MemoryContextCounters *totals,
+						  int *num_contexts)
+{
+	int			ichild = 1;
+
+	context->methods->stats(context, NULL, NULL, totals, false);
+
+	for (MemoryContext curr = context->firstchild;
+		 curr != NULL;
+		 curr = MemoryContextTraverseNext(curr, context))
+	{
+		curr->methods->stats(curr, NULL, NULL, totals, false);
+		ichild++;
+	}
+
+	/*
+	 * Add the count of children contexts which are traversed
+	 */
+	*num_contexts = *num_contexts + ichild;
+}
+
 /*
  * MemoryContextStatsPrint
  *		Print callback used by MemoryContextStatsInternal
