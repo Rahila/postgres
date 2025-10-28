@@ -9,10 +9,10 @@
 -- Attaches the action to the given injection point.
 --
 CREATE FUNCTION injection_points_attach(IN point_name TEXT,
-    IN action text)
+    IN action text, IN func TEXT default NULL, IN module TEXT default NULL)
 RETURNS void
 AS 'MODULE_PATHNAME', 'injection_points_attach'
-LANGUAGE C STRICT PARALLEL UNSAFE;
+LANGUAGE C PARALLEL UNSAFE;
 
 --
 -- injection_points_load()

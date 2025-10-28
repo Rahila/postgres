@@ -354,6 +354,7 @@ injection_points_attach(PG_FUNCTION_ARGS)
 	char	   *name = text_to_cstring(PG_GETARG_TEXT_PP(0));
 	char	   *action = text_to_cstring(PG_GETARG_TEXT_PP(1));
 	char	   *function;
+	char	   *mod_name;
 	InjectionPointCondition condition = {0};
 
 	if (strcmp(action, "error") == 0)
@@ -362,6 +363,15 @@ injection_points_attach(PG_FUNCTION_ARGS)
 		function = "injection_notice";
 	else if (strcmp(action, "wait") == 0)
 		function = "injection_wait";
+	else if (strcmp(action, "func") == 0)
+	{
+		if (PG_ARGISNULL(2))
+			elog(ERROR, "function name cannot be null for \"%s\" action", action);
+		function = text_to_cstring(PG_GETARG_TEXT_PP(2));
+		if (PG_ARGISNULL(3))
+			elog(ERROR, "module name cannot be null for \"%s\" action", action);
+		mod_name = text_to_cstring(PG_GETARG_TEXT_PP(3));
+	}
 	else
 		elog(ERROR, "incorrect action \"%s\" for injection point creation", action);
 
@@ -372,8 +382,13 @@ injection_points_attach(PG_FUNCTION_ARGS)
 	}
 
 	pgstat_report_inj_fixed(1, 0, 0, 0, 0);
-	InjectionPointAttach(name, "injection_points", function, &condition,
-						 sizeof(InjectionPointCondition));
+
+	if (strcmp(action, "func") == 0)
+		InjectionPointAttach(name, mod_name, function, &condition,
+							 sizeof(InjectionPointCondition));
+	else
+		InjectionPointAttach(name, "injection_points", function, &condition,
+							 sizeof(InjectionPointCondition));
 
 	if (injection_point_local)
 	{
