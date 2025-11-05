@@ -260,8 +260,6 @@ shmem_exit(int code)
 														 on_shmem_exit_list[on_shmem_exit_index].arg);
 	on_shmem_exit_index = 0;
 
-	shmem_exit_inprogress = false;
-	
 	/*
 	 * Call dynamic shared memory callbacks.
 	 *
@@ -279,6 +277,9 @@ shmem_exit(int code)
 	 * equal footing with callbacks for the main shared memory segment.
 	 */
 	dsm_backend_shutdown();
+	
+	shmem_exit_inprogress = false;
+	
 }
 
 /* ----------------------------------------------------------------
