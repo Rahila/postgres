@@ -389,6 +389,13 @@ GetNamedDSHash(const char *name, const dshash_parameters *params, bool *found)
 		/* Store handles for other backends to use. */
 		dsh_state->dsa_handle = dsa_get_handle(dsa);
 		dsh_state->dsh_handle = dshash_get_hash_table_handle(ret);
+
+		/*
+		 * Define a cleanup routine to release locks when the
+		 * segment is detached
+		 */
+		dsm_lock = dsa_pointer_get_segment();
+		on_dsm_detach(dsm_lock, dshash_release_lock_cb, (Datum) 0);
 	}
 	else if (entry->type != DSMR_ENTRY_TYPE_DSH)
 		ereport(ERROR,
