@@ -244,22 +244,6 @@ shmem_exit(int code)
 																 before_shmem_exit_list[before_shmem_exit_index].arg);
 	before_shmem_exit_index = 0;
 
-
-	/*
-	 * Call on_shmem_exit callbacks.
-	 *
-	 * These are generally releasing low-level shared memory resources.  In
-	 * some cases, this is a backstop against the possibility that the early
-	 * callbacks might themselves fail, leading to re-entry to this routine;
-	 * in other cases, it's cleanup that only happens at process exit.
-	 */
-	elog(DEBUG3, "shmem_exit(%d): %d on_shmem_exit callbacks to make",
-		 code, on_shmem_exit_index);
-	while (--on_shmem_exit_index >= 0)
-		on_shmem_exit_list[on_shmem_exit_index].function(code,
-														 on_shmem_exit_list[on_shmem_exit_index].arg);
-	on_shmem_exit_index = 0;
-
 	/*
 	 * Call dynamic shared memory callbacks.
 	 *
@@ -278,6 +262,22 @@ shmem_exit(int code)
 	 */
 	dsm_backend_shutdown();
 	
+
+	/*
+	 * Call on_shmem_exit callbacks.
+	 *
+	 * These are generally releasing low-level shared memory resources.  In
+	 * some cases, this is a backstop against the possibility that the early
+	 * callbacks might themselves fail, leading to re-entry to this routine;
+	 * in other cases, it's cleanup that only happens at process exit.
+	 */
+	elog(DEBUG3, "shmem_exit(%d): %d on_shmem_exit callbacks to make",
+		 code, on_shmem_exit_index);
+	while (--on_shmem_exit_index >= 0)
+		on_shmem_exit_list[on_shmem_exit_index].function(code,
+														 on_shmem_exit_list[on_shmem_exit_index].arg);
+	on_shmem_exit_index = 0;
+
 	shmem_exit_inprogress = false;
 	
 }

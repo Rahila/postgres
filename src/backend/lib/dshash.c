@@ -566,6 +566,23 @@ dshash_release_lock(dshash_table *hash_table, void *entry)
 }
 
 /*
+ * Unlock all dshash parition locks taken by me, called as
+ * an on_detach callback.
+ */
+void
+dshash_release_locks_all(dsm_segment *seg, Datum datum)
+{
+	dshash_table *hash_table = (dshash_table *) DatumGetPointer(datum);
+	Assert(hash_table->control->magic == DSHASH_MAGIC);
+
+	for (size_t i = 0; i < DSHASH_NUM_PARTITIONS; ++i)
+	{
+		if (LWLockHeldByMe(PARTITION_LOCK(hash_table, i)));
+			LWLockRelease(PARTITION_LOCK(hash_table, i));
+	}
+}
+
+/*
  * A compare function that forwards to memcmp.
  */
 int
@@ -1087,4 +1104,10 @@ copy_key(dshash_table *hash_table, void *dest, const void *src)
 	hash_table->params.copy_function(dest, src,
 									 hash_table->params.key_size,
 									 hash_table->arg);
+}
+
+dsa_pointer
+dshash_get_handle(dshash_table *hash_table)
+{
+	return(hash_table->control->handle);
 }

@@ -100,6 +100,8 @@ extern void *dshash_find_or_insert(dshash_table *hash_table,
 extern bool dshash_delete_key(dshash_table *hash_table, const void *key);
 extern void dshash_delete_entry(dshash_table *hash_table, void *entry);
 extern void dshash_release_lock(dshash_table *hash_table, void *entry);
+extern void dshash_release_locks_all(dsm_segment *dsm, Datum datum);
+dsa_pointer dshash_get_handle(dshash_table *hash_table);
 
 /* seq scan support */
 extern void dshash_seq_init(dshash_seq_status *status, dshash_table *hash_table,

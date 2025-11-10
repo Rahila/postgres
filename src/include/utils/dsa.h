@@ -163,5 +163,5 @@ extern void *dsa_get_address(dsa_area *area, dsa_pointer dp);
 extern size_t dsa_get_total_size(dsa_area *area);
 extern void dsa_trim(dsa_area *area);
 extern void dsa_dump(dsa_area *area);
-
+extern dsm_segment *dsa_get_segment_by_pointer(dsa_area *area, dsa_pointer dp);
 #endif							/* DSA_H */

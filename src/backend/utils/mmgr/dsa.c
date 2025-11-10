@@ -2355,3 +2355,13 @@ rebin_segment(dsa_area *area, dsa_segment_map *segment_map)
 		next->header->prev = segment_index;
 	}
 }
+
+/* Return DSM segment given a pointer */
+dsm_segment *
+dsa_get_segment_by_pointer(dsa_area *area, dsa_pointer dp)
+{
+	dsa_segment_map *segment_map;
+	
+	segment_map = get_segment_by_index(area, DSA_EXTRACT_SEGMENT_NUMBER(dp));
+	return segment_map->segment;
+}

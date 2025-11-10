@@ -370,6 +370,7 @@ GetNamedDSHash(const char *name, const dshash_parameters *params, bool *found)
 		NamedDSHState *dsh_state = &entry->dsh;
 		dshash_parameters params_copy;
 		dsa_area   *dsa;
+		dsm_segment *control_segment;
 
 		entry->type = DSMR_ENTRY_TYPE_DSH;
 
@@ -390,12 +391,12 @@ GetNamedDSHash(const char *name, const dshash_parameters *params, bool *found)
 		dsh_state->dsa_handle = dsa_get_handle(dsa);
 		dsh_state->dsh_handle = dshash_get_hash_table_handle(ret);
 
+		control_segment = dsa_get_segment_by_pointer(dsa, dshash_get_handle(ret));
 		/*
-		 * Define a cleanup routine to release locks when the
+		 * Register a cleanup routine to release locks before the control
 		 * segment is detached
 		 */
-		dsm_lock = dsa_pointer_get_segment();
-		on_dsm_detach(dsm_lock, dshash_release_lock_cb, (Datum) 0);
+		on_dsm_detach(control_segment, dshash_release_locks_all, PointerGetDatum(ret));
 	}
 	else if (entry->type != DSMR_ENTRY_TYPE_DSH)
 		ereport(ERROR,
